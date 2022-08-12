@@ -57,9 +57,8 @@ try {
     socket.on('message', function message(data) {
         var message = JSON.parse(data.toString('utf-8'));
         if (message.e !== 'ORDER_TRADE_UPDATE') return;
-        if (message.o && message.o.i && message.o.x && message.o.X)
-            console.log(`${message.o.i}:${message.o.x}:${message.o.X}`);
-        else console.log(JSON.stringify(message));
+        //if the initial placement
+        //put a trailing stop
     });
 
     process.stdin.setRawMode(true);
