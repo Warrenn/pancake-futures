@@ -1,8 +1,13 @@
-const { exit } = await import('node:process');
-const { WebSocket } = await import('ws');
-const { createHmac } = await import('node:crypto');
-const querystring = await import('node:querystring');
-await import('dotenv/config');
+const { exit } = await
+import ('node:process');
+const { WebSocket } = await
+import ('ws');
+const { createHmac } = await
+import ('node:crypto');
+const querystring = await
+import ('node:querystring');
+await
+import ('dotenv/config');
 
 const baseApiUrl = 'https://fapi.apollox.finance/fapi/v1';
 const baseWssUrl = 'wss://fstream.apollox.finance/ws';
@@ -48,25 +53,31 @@ async function callFetch(action, method) {
 try {
     var { listenKey } = await callFetch('listenKey');
 
-    var interval = setInterval(async () => {
+    var interval = setInterval(async() => {
         await callFetch('listenKey', 'PUT');
-    }, 59 * 60 * 1000/*59 minutes: minutes * seconds * milliseconds*/);
+    }, 59 * 60 * 1000 /*59 minutes: minutes * seconds * milliseconds*/ );
 
     var socket = new WebSocket(`${baseWssUrl}/${listenKey}`);
 
     socket.on('message', function message(data) {
-        var message = JSON.parse(data.toString('utf-8'));
-        if (message.e !== 'ORDER_TRADE_UPDATE') return;
-        if (message.o && message.o.i && message.o.x && message.o.X)
-            console.log(`${message.o.i}:${message.o.x}:${message.o.X}`);
-        else console.log(JSON.stringify(message));
+        try {
+            const message = JSON.parse(data.toString('utf-8'));
+            const execKey = keygen(message);
+            if (!execKey) return;
+
+            execFunc = executions[execKey];
+            if (!execFunc) return;
+
+            execFunc(message);
+        } catch (ex) {
+            console.error(ex);
+        }
     });
 
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on('data', process.exit.bind(process, 0));
     clearInterval(interval);
-}
-catch (ex) {
+} catch (ex) {
     console.error(ex);
 }
