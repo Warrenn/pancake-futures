@@ -1,0 +1,22 @@
+short hit
+    short sell to the maximum
+
+    cancel all pending orders
+    place stop-limit -close
+        price: little higher than market
+    place trail-buy -close
+        trigger: little lower than market
+        callback: reasonable pct
+        close: true
+
+close hit
+    close account
+
+    cancel all pending orders
+    place a stop-limit -short 
+        price: little lower than market 
+        amount: maximum
+    place trail-sell -short
+        trigger: little higher than market
+        callback: reasonable pct
+        amount: maximum

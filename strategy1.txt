@@ -1,0 +1,10 @@
+strike order hit
+ short sell to the maximum
+
+ place stop-limit little higher to close account -close order
+
+
+close order is hit
+  close account at loss
+
+  place a stop-limit little lower to short sell to maximum -strike order
