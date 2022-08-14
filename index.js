@@ -18,13 +18,14 @@ const key = process.env.PANCAKE_KEY || (() => { throw "access key required"; })(
 const secret = process.env.PANCAKE_SECRET || (() => { throw "secret key required"; })();
 
 const symbol = process.env.PANCAKE_SYMBOL || (() => { throw "symbol required"; })();
-const strikePrice = parseFloat(process.env.PANCAKE_STRIKE_PRICE) || (() => { throw "strike price needs to be a number"; })();
 const closePercent = parseFloat(process.env.PANCAKE_CLOSE_PERCENT) || (() => { throw "close percent needs to be a number"; })();
+const callbackRate = parseFloat(process.env.PANCAKE_CALLBACK_RATE) || (() => { throw "callback rate needs to be a number"; })();
+const inverval = parseInt(process.env.PANCAKE_INTERVAL) || 1000;
+
 const cashSize = parseFloat(process.env.PANCAKE_CASH_SIZE) || (() => { throw "cash size needs to be a number"; })();
-const sleepInterval = parseInt(process.env.PANCAKE_SLEEP) || 3000;
+const strikePrice = parseFloat(process.env.PANCAKE_STRIKE_PRICE) || (() => { throw "strike price needs to be a number"; })();
 
 let executions = {};
-let intervalRef = null;
 
 async function signedFetch(action, queryObj, method) {
     queryObj = {
@@ -39,26 +40,39 @@ async function signedFetch(action, queryObj, method) {
         .update(query)
         .digest('hex');
 
-    const response = await fetch(`${baseApiUrl}/${action}?${query}&signature=${hash}`, {
-        method: method,
-        headers: {
-            "X-MBX-APIKEY": key
-        }
-    });
-    const responseJson = await response.json();
-    return responseJson;
+    try {
+        const response = await fetch(`${baseApiUrl}/${action}?${query}&signature=${hash}`, {
+            method: method,
+            headers: {
+                "X-MBX-APIKEY": key
+            }
+        });
+        const responseJson = await response.json();
+        return responseJson;
+    } catch (e) {
+        console.error(e);
+        return null;
+    }
 }
 
-async function callFetch(action, method) {
+async function callFetch(action, queryObj, method) {
     method = method || 'POST';
-    const response = await fetch(`${baseApiUrl}/${action}`, {
-        method: method,
-        headers: {
-            "X-MBX-APIKEY": key
-        }
-    });
-    const responseJson = await response.json();
-    return responseJson;
+    let query = '';
+    if (queryObj) query = `?${querystring.encode(queryObj)}`;
+    try {
+        const response = await fetch(`${baseApiUrl}/${action}${query}`, {
+            method: method,
+            headers: {
+                "X-MBX-APIKEY": key
+            }
+        });
+        const responseJson = await response.json();
+        return responseJson;
+    }
+    catch (e) {
+        console.error(e);
+        return null;
+    }
 }
 
 function keygen(message) {
@@ -71,87 +85,70 @@ const placeClose = async (o) => await signedFetch('order', {
     "symbol": symbol,
     "side": "BUY",
     "type": "STOP",
-    "price": o.price,
     "stopPrice": o.price,
-    "closePosition": true
+    "price": o.price,
+    "reduceOnly": true,
+    "quantity": o.quantity
 });
 
 const placeShort = async (o) => await signedFetch('order', {
     "symbol": symbol,
     "side": "SELL",
     "type": "STOP",
-    "price": o.price,
     "stopPrice": o.price,
-    "size": o.size
+    "price": o.price,
+    "quantity": o.quantity
 });
 
+const placeTriggerReduce = async (o) => await signedFetch('order', {
+    "symbol": symbol,
+    "side": "BUY",
+    "type": "TRAILING_STOP_MARKET",
+    "quantity": o.quantity,
+    "reduceOnly": true,
+    "activationPrice": o.activationPrice,
+    "callbackRate": o.callbackRate
+});
+
+const placeTriggerShort = async (o) => await signedFetch('order', {
+    "symbol": symbol,
+    "side": "SELL",
+    "type": "TRAILING_STOP_MARKET",
+    "quantity": o.quantity,
+    "activationPrice": o.activationPrice,
+    "callbackRate": o.callbackRate
+});
+
+const round1 = num => Math.round(num * 10) / 10;
+const round3 = num => Math.round(num * 1000) / 1000;
+
+const size = round3(cashSize / strikePrice);
+const closePrice = round1(strikePrice * (1 + closePercent));
+
 async function closeFilled(message) {
-    const lastPrice = parseFloat(message.o.L);
-    const price = lastPrice * (1 - closePercent);
-    const size = cashSize / price;
+    const shortResponse = await placeShort({ price: strikePrice, quantity: size });
+    if (!shortResponse) return;
+    executions[`ORDER_TRADE_UPDATE:${shortResponse.orderId}:FILLED`] = shortFilled;
 
-    if (intervalRef) {
-        clearInterval(intervalRef);
-        intervalRef = null;
-    }
-
-    const orderResponse = await placeShort({ price, size });
-    const callbackKey = `ORDER_TRADE_UPDATE:${orderResponse.orderId}:FILLED`;
-
-    executions[callbackKey] = shortFilled;
-
-    intervalRef = setInterval(async () => {
-        const marketResp = await callFetch('premiumIndex', 'GET');
-        if (marketResp.markPrice < strikePrice) return;
-        const strikeSize = cashSize / strikePrice;
-
-        await signedFetch('allOpenOrders', { symbol }, 'DELETE');
-        const strikeResponse = await placeShort({ price: strikePrice, size: strikeSize });
-
-        delete executions[callbackKey];
-        executions[`ORDER_TRADE_UPDATE:${strikeResponse.orderId}:FILLED`] = shortFilled;
-
-        clearInterval(intervalRef);
-    }, sleepInterval);
-
+    console.log(`closed at ${message.o.L}`);
     return { removeKey: true };
 }
 
 async function shortFilled(message) {
-    const lastPrice = parseFloat(message.o.L);
-    const price = lastPrice * (1 + closePercent);
+    const closeResponse = await placeClose({ price: closePrice, quantity: size });
+    if (!closeResponse) return;
+    executions[`ORDER_TRADE_UPDATE:${closeResponse.orderId}:FILLED`] = closeFilled;
 
-    if (intervalRef) {
-        clearInterval(intervalRef);
-        intervalRef = null;
-    }
-
-    const orderResponse = await placeClose({ price });
-    const callbackKey = `ORDER_TRADE_UPDATE:${orderResponse.orderId}:FILLED`;
-
-    executions[callbackKey] = closeFilled;
-
-    intervalRef = setInterval(async () => {
-        const marketResp = await callFetch('premiumIndex', 'GET');
-        if (marketResp.markPrice > strikePrice) return;
-
-        await signedFetch('allOpenOrders', { symbol }, 'DELETE');
-        const strikeResponse = await placeClose({ price: strikePrice });
-
-        delete executions[callbackKey];
-        executions[`ORDER_TRADE_UPDATE:${strikeResponse.orderId}:FILLED`] = closeFilled;
-        clearInterval(intervalRef);
-
-    }, sleepInterval);
-
+    console.log(`shorted at ${message.o.L}`);
     return { removeKey: true };
 }
 
 try {
     var { listenKey } = await callFetch('listenKey');
+    if (!listenKey) process.exit();
 
-    var interval = setInterval(async () => {
-        await callFetch('listenKey', 'PUT');
+    var listenRef = setInterval(async () => {
+        await callFetch('listenKey', null, 'PUT');
     }, 59 * 60 * 1000 /*59 minutes: minutes * seconds * milliseconds*/);
 
     var socket = new WebSocket(`${baseWssUrl}/${listenKey}`);
@@ -172,10 +169,12 @@ try {
         }
     });
 
-    process.stdin.setRawMode(true);
+    await closeFilled({ o: { L: strikePrice } });
+
     process.stdin.resume();
     process.stdin.on('data', process.exit.bind(process, 0));
-    clearInterval(interval);
+
+    clearInterval(listenRef);
 } catch (ex) {
     console.error(ex);
 }
