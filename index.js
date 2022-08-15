@@ -154,24 +154,8 @@ try {
 
     var listenRef = setInterval(async () => {
         console.log('renewing key');
-        var putResponse = await callFetch('listenKey', 'PUT');
-        if (putResponse) return;
-
-        console.error(`key:${listenKey} not found`);
-        if (socket && socket.OPEN) socket.close();
-        await callFetch('listenKey', 'DELETE');
-        
-        while (true) {
-            let listResponse = await callFetch('listenKey');
-            if (!listResponse || !listResponse.listenKey) continue;
-            listenKey = listResponse.listenKey;
-            break;
-        }
-        
-        socket = new WebSocket(`${baseWssUrl}/${listenKey}`);
-        socket.on('message', async data => await onMessage(data));
-
-    }, 30000/*59 minutes: 59 minutes * 60 seconds * 1000 milliseconds*/);
+        await callFetch('listenKey', 'PUT');
+    }, 3540000/*59 minutes: 59 minutes * 60 seconds * 1000 milliseconds*/);
 
     await closeFilled({ o: { L: strikePrice } });
 
