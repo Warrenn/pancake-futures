@@ -13,17 +13,22 @@ const { setTimeout: asyncSleep } = await import('timers/promises');
 const baseApiUrl = 'https://fapi.apollox.finance/fapi/v1';
 const baseWssUrl = 'wss://fstream.apollox.finance/ws';
 const recvWindow = 99999;
+const checkInterval = 3000;
 
 const key = process.env.PANCAKE_KEY || (() => { throw "access key required"; })();
 const secret = process.env.PANCAKE_SECRET || (() => { throw "secret key required"; })();
 
 const symbol = process.env.PANCAKE_SYMBOL || (() => { throw "symbol required"; })();
 const closePercent = parseFloat(process.env.PANCAKE_CLOSE_PERCENT) || (() => { throw "close percent needs to be a number"; })();
-
 const cashSize = parseFloat(process.env.PANCAKE_CASH_SIZE) || (() => { throw "cash size needs to be a number"; })();
 const strikePrice = parseFloat(process.env.PANCAKE_STRIKE_PRICE) || (() => { throw "strike price needs to be a number"; })();
+const takeProfit = parseFloat(process.env.PANCAKE_TAKE_PROFIT_PERCENT) || (() => { throw "take profit needs to be a number"; })();
 
 let executions = {};
+let checkPriceRef = null;
+
+const round1 = num => Math.round(num * 10) / 10;
+const round3 = num => Math.round(num * 1000) / 1000;
 
 async function signedFetch(action, queryObj, method) {
     queryObj = {
@@ -37,97 +42,168 @@ async function signedFetch(action, queryObj, method) {
     const hash = createHmac('sha256', secret)
         .update(query)
         .digest('hex');
+    const url = `${baseApiUrl}/${action}?${query}&signature=${hash}`;
 
+    return await callFetch(url, method, key);
+}
+
+async function callFetch(url, method, key) {
     try {
-        const response = await fetch(`${baseApiUrl}/${action}?${query}&signature=${hash}`, {
+        const response = await fetch(url, {
             method: method,
             headers: {
                 "X-MBX-APIKEY": key
             }
         });
+
+        if (response.status != 200) {
+            let msg = await response.text();
+            throw `${response.status} ${msg}`;
+        }
+
         const responseJson = await response.json();
+        if (responseJson.code && responseJson.code < 0) {
+            throw `${responseJson.code} ${responseJson.msg}`;
+        }
         return responseJson;
     } catch (e) {
-        console.error(`signedFetch error ${baseApiUrl}/${action}?${query}&signature=${hash}`);
+        console.error(`error fetching ${url}`);
         console.error(e);
         return null;
     }
 }
 
-async function callFetch(action, queryObj, method) {
+async function unsignedFetch(action, queryObj, method) {
     method = method || 'POST';
-    let query = '';
-    if (queryObj) query = `?${querystring.encode(queryObj)}`;
-    try {
-        const response = await fetch(`${baseApiUrl}/${action}${query}`, {
-            method: method,
-            headers: {
-                "X-MBX-APIKEY": key
-            }
-        });
-        const responseJson = await response.json();
-        return responseJson;
-    }
-    catch (e) {
-        console.error(`callFetch error ${baseApiUrl}/${action}${query}`);
-        console.error(e);
-        return null;
-    }
+    let url = `${baseApiUrl}/${action}`;
+    if (queryObj) url = `${url}?${querystring.encode(queryObj)}`;
+    return await callFetch(url, method, key);
 }
 
 function keygen(message) {
     if (!message || !message.e) return null;
-    if (message.e == 'ORDER_TRADE_UPDATE') return `ORDER_TRADE_UPDATE:${message.o.i}:${message.o.X}`;
+    if (message.e == 'ORDER_TRADE_UPDATE' && message.o.o == 'LIQUIDATION') return 'LIQUIDATION';
+    if (message.e == 'ORDER_TRADE_UPDATE' && message.o.x == 'EXPIRED') return `EXPIRED:${message.o.i}`;
+    if (message.e == 'ORDER_TRADE_UPDATE' && message.o.X == 'FILLED') return `FILLED:${message.o.i}`;
     return null;
 }
 
 const placeClose = async (o) => await signedFetch('order', {
     "symbol": symbol,
     "side": "BUY",
-    "type": "STOP",
+    "type": "STOP_MARKET",
     "stopPrice": o.price,
-    "price": o.price,
-    "reduceOnly": true,
-    "quantity": o.quantity
+    "closePosition": true
 });
 
 const placeShort = async (o) => await signedFetch('order', {
     "symbol": symbol,
     "side": "SELL",
-    "type": "STOP",
+    "type": "STOP_MARKET",
     "stopPrice": o.price,
-    "price": o.price,
     "quantity": o.quantity
 });
 
+async function placeAndSetupOrder(order, placeOrder, callBack) {
+    const response = await placeOrder(order);
+    if (!response) return null;
+    const responseId = response.orderId;
 
-const round1 = num => Math.round(num * 10) / 10;
-const round3 = num => Math.round(num * 1000) / 1000;
+    executions[`FILLED:${responseId}`] = callBack;
+    executions[`EXPIRED:${responseId}`] = createExpiredCallback(order, placeOrder);
+    return response;
+}
 
-const size = round3(cashSize / strikePrice);
-const closePrice = round1(strikePrice * (1 + closePercent));
+async function createExpiredCallback(order, placeOrder) {
+    return async message => {
+        delete executions[`FILLED:${message.o.i}`];
+        delete executions[`EXPIRED:${message.o.i}`];
+
+        placeAndSetupOrder(order, placeOrder, shortFilled);
+    }
+}
+
+async function placeStrike() {
+    const size = cashSize / strikePrice;
+    const strikeResponse = await placeAndSetupOrder({ price: strikePrice, quantity: size }, placeShort, shortFilled);
+
+    console.log(`strike placed price:${strikePrice} size:${size}`);
+    return strikeResponse;
+}
+
+async function cancelOrder(orderId) {
+    await signedFetch('order', {
+        "symbol": symbol,
+        "orderId": orderId
+    }, 'DELETE');
+
+    delete executions[`FILLED:${orderId}`];
+    delete executions[`EXPIRED:${orderId}`];
+}
 
 async function closeFilled(message) {
-    const shortResponse = await placeShort({ price: strikePrice, quantity: size });
-    if (!shortResponse) return;
-    executions[`ORDER_TRADE_UPDATE:${shortResponse.orderId}:FILLED`] = shortFilled;
+    const lastPrice = message.o.L;
+    const shortPrice = lastPrice * (1 - closePercent);
+    const size = cashSize / shortPrice;
 
-    console.log(`closed at ${message.o.L}`);
-    return { removeKey: true };
+    if (checkPriceRef) clearInterval(checkPriceRef);
+    delete executions[`FILLED:${message.o.i}`];
+    delete executions[`EXPIRED:${message.o.i}`];
+
+    const orderDetails = { price: shortPrice, quantity: size };
+    const shortResponse = await placeAndSetupOrder(orderDetails, placeShort, shortFilled);
+    if (!shortResponse) return;
+    const shortOrderId = shortResponse.orderId;
+
+    checkPriceRef = setInterval(async () => {
+        const marketResponse = await unsignedFetch('premiumIndex', { symbol }, 'GET');
+        if (!marketResponse) return;
+
+        const marketPrice = marketResponse.markPrice;
+        if (marketPrice < strikePrice) return;
+
+        await placeStrike();
+        await cancelOrder(shortOrderId);
+        clearInterval(checkPriceRef);
+
+    }, checkInterval);
+
+    console.log(`${Date.now()} ${shortOrderId} Close Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
 }
 
 async function shortFilled(message) {
-    const closeResponse = await placeClose({ price: closePrice, quantity: size });
-    if (!closeResponse) return;
-    executions[`ORDER_TRADE_UPDATE:${closeResponse.orderId}:FILLED`] = closeFilled;
+    const lastPrice = message.o.L;
+    const closePrice = lastPrice * (1 + closePercent);
+    const takeProfitPrice = lastPrice * (1 - takeProfit);
 
-    console.log(`shorted at ${message.o.L}`);
-    return { removeKey: true };
+    if (checkPriceRef) clearInterval(checkPriceRef);
+    delete executions[`FILLED:${message.o.i}`];
+    delete executions[`EXPIRED:${message.o.i}`];
+
+    const closeResponse = await placeAndSetupOrder({ price: closePrice }, placeClose, closeFilled);
+    if (!closeResponse) return;
+    const closeOrderId = closeResponse.orderId;
+
+    checkPriceRef = setInterval(async () => {
+        const marketResponse = await unsignedFetch('premiumIndex', { symbol }, 'GET');
+        if (!marketResponse) return;
+
+        const marketPrice = marketResponse.markPrice;
+        if (marketPrice > takeProfitPrice) return;
+
+        await placeAndSetupOrder({ price: takeProfitPrice }, placeClose, closeFilled);
+        await cancelOrder(shortOrderId);
+        clearInterval(checkPriceRef);
+
+    }, checkInterval);
+
+    console.log(`${Date.now()} ${closeOrderId} Short Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
 }
 
 async function onMessage(data) {
     try {
         const dataText = data.toString('utf-8');
+        console.log(dataText);
         const message = JSON.parse(dataText);
         console.log(message.e);
         const execKey = keygen(message);
@@ -144,9 +220,12 @@ async function onMessage(data) {
     }
 }
 
+//place logic when liquidation occurs
+//figure out expiration and renewal
+
 try {
     console.log(`strike-price ${strikePrice} close-price ${closePrice}`);
-    var { listenKey } = await callFetch('listenKey');
+    var { listenKey } = await unsignedFetch('listenKey');
     if (!listenKey) process.exit();
 
     var socket = new WebSocket(`${baseWssUrl}/${listenKey}`);
@@ -154,10 +233,11 @@ try {
 
     var listenRef = setInterval(async () => {
         console.log('renewing key');
-        await callFetch('listenKey', 'PUT');
+        await unsignedFetch('listenKey', 'PUT');
     }, 3540000/*59 minutes: 59 minutes * 60 seconds * 1000 milliseconds*/);
 
-    await closeFilled({ o: { L: strikePrice } });
+    await placeStrike();
+    executions['LIQUIDATION'] = placeStrike;
 
     process.stdin.resume();
     process.stdin.on('data', process.exit.bind(process, 0));
