@@ -67,7 +67,7 @@ async function callFetch(url, method, key) {
         }
         return responseJson;
     } catch (e) {
-        console.error(`error fetching ${url}`);
+        console.error(`error fetching ${method} ${url}`);
         console.error(e);
         return null;
     }
@@ -83,7 +83,8 @@ async function unsignedFetch(action, queryObj, method) {
 function keygen(message) {
     if (!message || !message.e) return null;
     if (message.e == 'ORDER_TRADE_UPDATE' && message.o.o == 'LIQUIDATION') return 'LIQUIDATION';
-    if (message.e == 'ORDER_TRADE_UPDATE' && message.o.x == 'EXPIRED') return `EXPIRED:${message.o.i}`;
+    //if (message.e == 'ORDER_TRADE_UPDATE' && message.o.x == 'EXPIRED') return `EXPIRED:${message.o.i}`;
+    //if (message.e == 'ORDER_TRADE_UPDATE' && message.o.x == 'CANCELED') return `LIQUIDATION`;
     if (message.e == 'ORDER_TRADE_UPDATE' && message.o.X == 'FILLED') return `FILLED:${message.o.i}`;
     return null;
 }
@@ -110,24 +111,22 @@ async function placeAndSetupOrder(order, placeOrder, callBack) {
     const responseId = response.orderId;
 
     executions[`FILLED:${responseId}`] = callBack;
-    executions[`EXPIRED:${responseId}`] = createExpiredCallback(order, placeOrder);
+    //executions[`EXPIRED:${responseId}`] = createExpiredCallback(order, placeOrder);
     return response;
 }
 
-async function createExpiredCallback(order, placeOrder) {
+function createExpiredCallback(order, placeOrder) {
     return async message => {
         delete executions[`FILLED:${message.o.i}`];
-        delete executions[`EXPIRED:${message.o.i}`];
+        //delete executions[`EXPIRED:${message.o.i}`];
 
         placeAndSetupOrder(order, placeOrder, shortFilled);
     }
 }
 
 async function placeStrike() {
-    const size = cashSize / strikePrice;
+    const size = round3(cashSize / strikePrice);
     const strikeResponse = await placeAndSetupOrder({ price: strikePrice, quantity: size }, placeShort, shortFilled);
-
-    console.log(`strike placed price:${strikePrice} size:${size}`);
     return strikeResponse;
 }
 
@@ -138,49 +137,58 @@ async function cancelOrder(orderId) {
     }, 'DELETE');
 
     delete executions[`FILLED:${orderId}`];
-    delete executions[`EXPIRED:${orderId}`];
+    //delete executions[`EXPIRED:${orderId}`];
 }
 
 async function closeFilled(message) {
     const lastPrice = message.o.L;
-    const shortPrice = lastPrice * (1 - closePercent);
-    const size = cashSize / shortPrice;
+    let shortPrice = round1(lastPrice * (1 - closePercent));
+    shortPrice = Math.min(shortPrice, strikePrice);
+    const size = round3(cashSize / shortPrice);
 
     if (checkPriceRef) clearInterval(checkPriceRef);
     delete executions[`FILLED:${message.o.i}`];
-    delete executions[`EXPIRED:${message.o.i}`];
+    //delete executions[`EXPIRED:${message.o.i}`];
 
     const orderDetails = { price: shortPrice, quantity: size };
     const shortResponse = await placeAndSetupOrder(orderDetails, placeShort, shortFilled);
-    if (!shortResponse) return;
+    console.log(`place short at ${shortPrice} size: ${size} lastPrice:${lastPrice} sp:${message.o.sp}`);
+    if (!shortResponse || shortPrice == strikePrice) return;
     const shortOrderId = shortResponse.orderId;
 
+    const strikeCheck = strikePrice * (1 + closePercent);
     checkPriceRef = setInterval(async () => {
         const marketResponse = await unsignedFetch('premiumIndex', { symbol }, 'GET');
         if (!marketResponse) return;
 
-        const marketPrice = marketResponse.markPrice;
-        if (marketPrice < strikePrice) return;
+        const marketPrice = round1(marketResponse.markPrice);
+        if (marketPrice <= strikeCheck) return;
 
-        await placeStrike();
-        await cancelOrder(shortOrderId);
+        const reAdjust = await placeStrike();
+        if (!reAdjust) return;
+
         clearInterval(checkPriceRef);
+        console.log(`re-adjusted to strike at ${marketPrice} strike: ${strikePrice}`);
+        await cancelOrder(shortOrderId);
 
     }, checkInterval);
 
-    console.log(`${Date.now()} ${shortOrderId} Close Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
+    //console.log(`${Date.now()} ${shortOrderId} Close Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
 }
 
 async function shortFilled(message) {
     const lastPrice = message.o.L;
-    const closePrice = lastPrice * (1 + closePercent);
-    const takeProfitPrice = lastPrice * (1 - takeProfit);
+    let closePrice = round1(lastPrice * (1 + closePercent));
+    const takeProfitPrice = round1(lastPrice * (1 - takeProfit));
+
+    if (lastPrice < message.o.sp) closePrice = Math.min(closePrice, message.o.sp);
 
     if (checkPriceRef) clearInterval(checkPriceRef);
     delete executions[`FILLED:${message.o.i}`];
-    delete executions[`EXPIRED:${message.o.i}`];
+    //delete executions[`EXPIRED:${message.o.i}`];
 
     const closeResponse = await placeAndSetupOrder({ price: closePrice }, placeClose, closeFilled);
+    console.log(`placed close at ${closePrice} lastPrice: ${lastPrice} takeProfit: ${takeProfitPrice} sp:${message.o.sp}`);
     if (!closeResponse) return;
     const closeOrderId = closeResponse.orderId;
 
@@ -188,24 +196,25 @@ async function shortFilled(message) {
         const marketResponse = await unsignedFetch('premiumIndex', { symbol }, 'GET');
         if (!marketResponse) return;
 
-        const marketPrice = marketResponse.markPrice;
-        if (marketPrice > takeProfitPrice) return;
+        const marketPrice = round1(marketResponse.markPrice);
+        if (marketPrice >= takeProfitPrice) return;
 
-        await placeAndSetupOrder({ price: takeProfitPrice }, placeClose, closeFilled);
-        await cancelOrder(shortOrderId);
+        const reAdjust = await placeAndSetupOrder({ price: takeProfitPrice }, placeClose, closeFilled);
+        if (!reAdjust) return;
+
         clearInterval(checkPriceRef);
+        console.log(`re-adjusted close at ${takeProfitPrice} market: ${marketPrice}`);
+        await cancelOrder(closeOrderId);
 
     }, checkInterval);
 
-    console.log(`${Date.now()} ${closeOrderId} Short Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
+    //console.log(`${Date.now()} ${closeOrderId} Short Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
 }
 
 async function onMessage(data) {
     try {
         const dataText = data.toString('utf-8');
-        console.log(dataText);
         const message = JSON.parse(dataText);
-        console.log(message.e);
         const execKey = keygen(message);
         if (!execKey) return;
 
@@ -219,11 +228,8 @@ async function onMessage(data) {
     }
 }
 
-//place logic when liquidation occurs
-//figure out expiration and renewal
-
 try {
-    console.log(`strike-price ${strikePrice} close-price ${closePrice}`);
+    console.log(`strike-price ${strikePrice}`);
     var { listenKey } = await unsignedFetch('listenKey');
     if (!listenKey) process.exit();
 
