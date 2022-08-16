@@ -212,8 +212,7 @@ async function onMessage(data) {
         const execFunc = executions[execKey];
         if (!execFunc) return;
 
-        const result = await execFunc(message);
-        if (result.removeKey) delete executions[execKey];
+        await execFunc(message);
     } catch (ex) {
         console.error('message error');
         console.error(ex);
