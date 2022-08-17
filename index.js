@@ -22,7 +22,6 @@ const symbol = process.env.PANCAKE_SYMBOL || (() => { throw "symbol required"; }
 const closePercent = parseFloat(process.env.PANCAKE_CLOSE_PERCENT) || (() => { throw "close percent needs to be a number"; })();
 const cashSize = parseFloat(process.env.PANCAKE_CASH_SIZE) || (() => { throw "cash size needs to be a number"; })();
 const strikePrice = parseFloat(process.env.PANCAKE_STRIKE_PRICE) || (() => { throw "strike price needs to be a number"; })();
-const takeProfit = parseFloat(process.env.PANCAKE_TAKE_PROFIT_PERCENT) || (() => { throw "take profit needs to be a number"; })();
 
 let executions = {};
 let checkPriceRef = null;
@@ -84,7 +83,6 @@ function keygen(message) {
     if (!message || !message.e) return null;
     if (message.e == 'ORDER_TRADE_UPDATE' && message.o.o == 'LIQUIDATION') return 'LIQUIDATION';
     //if (message.e == 'ORDER_TRADE_UPDATE' && message.o.x == 'EXPIRED') return `EXPIRED:${message.o.i}`;
-    //if (message.e == 'ORDER_TRADE_UPDATE' && message.o.x == 'CANCELED') return `LIQUIDATION`;
     if (message.e == 'ORDER_TRADE_UPDATE' && message.o.X == 'FILLED') return `FILLED:${message.o.i}`;
     return null;
 }
@@ -151,21 +149,38 @@ async function closeFilled(message) {
     //delete executions[`EXPIRED:${message.o.i}`];
 
     const orderDetails = { price: shortPrice, quantity: size };
-    const shortResponse = await placeAndSetupOrder(orderDetails, placeShort, shortFilled);
+    let shortResponse = null;
+    while (!shortResponse) {
+        shortResponse = await placeAndSetupOrder(orderDetails, placeShort, shortFilled);
+    }
     console.log(`place short at ${shortPrice} size: ${size} lastPrice:${lastPrice} sp:${message.o.sp}`);
-    if (!shortResponse || shortPrice == strikePrice) return;
+
+    if (shortPrice == strikePrice) return;
     const shortOrderId = shortResponse.orderId;
 
     const strikeCheck = strikePrice * (1 + closePercent);
+    let inCallback = false;
     checkPriceRef = setInterval(async () => {
+        if (inCallback) return;
+        inCallback = true;
+
         const marketResponse = await unsignedFetch('premiumIndex', { symbol }, 'GET');
-        if (!marketResponse) return;
+        if (!marketResponse) {
+            inCallback = false;
+            return;
+        };
 
         const marketPrice = round1(marketResponse.markPrice);
-        if (marketPrice <= strikeCheck) return;
+        if (marketPrice <= strikeCheck) {
+            inCallback = false;
+            return;
+        };
 
         const reAdjust = await placeStrike();
-        if (!reAdjust) return;
+        if (!reAdjust) {
+            inCallback = false;
+            return;
+        };
 
         clearInterval(checkPriceRef);
         console.log(`re-adjusted to strike at ${marketPrice} strike: ${strikePrice}`);
@@ -179,7 +194,6 @@ async function closeFilled(message) {
 async function shortFilled(message) {
     const lastPrice = message.o.L;
     let closePrice = round1(lastPrice * (1 + closePercent));
-    const takeProfitPrice = round1(lastPrice * (1 - takeProfit));
 
     if (lastPrice < message.o.sp) closePrice = Math.min(closePrice, message.o.sp);
 
@@ -187,23 +201,42 @@ async function shortFilled(message) {
     delete executions[`FILLED:${message.o.i}`];
     //delete executions[`EXPIRED:${message.o.i}`];
 
-    const closeResponse = await placeAndSetupOrder({ price: closePrice }, placeClose, closeFilled);
-    console.log(`placed close at ${closePrice} lastPrice: ${lastPrice} takeProfit: ${takeProfitPrice} sp:${message.o.sp}`);
-    if (!closeResponse) return;
+    // keep retrying on failures
+    let closeResponse = null;
+    while (!closeResponse) {
+        closeResponse = await placeAndSetupOrder({ price: closePrice }, placeClose, closeFilled);
+    }
+    console.log(`placed close at ${closePrice} lastPrice: ${lastPrice} sp:${message.o.sp}`);
+
+    if (closePrice < strikePrice) return;
     const closeOrderId = closeResponse.orderId;
 
+    const strikeCheck = strikePrice * (1 - closePercent);
+    let inCallback = false;
     checkPriceRef = setInterval(async () => {
+        if (inCallback) return;
+        inCallback = true;
+
         const marketResponse = await unsignedFetch('premiumIndex', { symbol }, 'GET');
-        if (!marketResponse) return;
+        if (!marketResponse)  {
+            inCallback = false;
+            return;
+        };
 
         const marketPrice = round1(marketResponse.markPrice);
-        if (marketPrice >= takeProfitPrice) return;
+        if (marketPrice >= strikeCheck)  {
+            inCallback = false;
+            return;
+        };
 
-        const reAdjust = await placeAndSetupOrder({ price: takeProfitPrice }, placeClose, closeFilled);
-        if (!reAdjust) return;
+        const reAdjust = await placeAndSetupOrder({ price: strikePrice }, placeClose, closeFilled);
+        if (!reAdjust)  {
+            inCallback = false;
+            return;
+        };
 
         clearInterval(checkPriceRef);
-        console.log(`re-adjusted close at ${takeProfitPrice} market: ${marketPrice}`);
+        console.log(`re-adjusted close at ${strikePrice} market: ${marketPrice}`);
         await cancelOrder(closeOrderId);
 
     }, checkInterval);
