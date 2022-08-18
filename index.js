@@ -19,7 +19,7 @@ const key = process.env.PANCAKE_KEY || (() => { throw "access key required"; })(
 const secret = process.env.PANCAKE_SECRET || (() => { throw "secret key required"; })();
 
 const symbol = process.env.PANCAKE_SYMBOL || (() => { throw "symbol required"; })();
-const closePercent = parseFloat(process.env.PANCAKE_CLOSE_PERCENT) || (() => { throw "close percent needs to be a number"; })();
+const tolerance = parseFloat(process.env.PANCAKE_TOLERANCE) || (() => { throw "tolerance needs to be a number"; })();
 const cashSize = parseFloat(process.env.PANCAKE_CASH_SIZE) || (() => { throw "cash size needs to be a number"; })();
 const strikePrice = parseFloat(process.env.PANCAKE_STRIKE_PRICE) || (() => { throw "strike price needs to be a number"; })();
 
@@ -140,7 +140,7 @@ async function cancelOrder(orderId) {
 
 async function closeFilled(message) {
     const lastPrice = message.o.L;
-    let shortPrice = round1(lastPrice * (1 - closePercent));
+    let shortPrice = round1(lastPrice * (1 - tolerance));
     shortPrice = Math.min(shortPrice, strikePrice);
     const size = round3(cashSize / shortPrice);
 
@@ -158,7 +158,6 @@ async function closeFilled(message) {
     if (shortPrice == strikePrice) return;
     const shortOrderId = shortResponse.orderId;
 
-    const strikeCheck = strikePrice * (1 + closePercent);
     let inCallback = false;
     checkPriceRef = setInterval(async () => {
         if (inCallback) return;
@@ -170,22 +169,28 @@ async function closeFilled(message) {
             return;
         };
 
-        const marketPrice = round1(marketResponse.markPrice);
-        if (marketPrice <= strikeCheck) {
+        const newShort = round1(marketResponse.markPrice * (1 - tolerance));
+        if (newShort <= shortPrice) {
             inCallback = false;
             return;
         };
 
-        const reAdjust = await placeStrike();
+        if (newShort > strikePrice) newShort = strikePrice;
+
+        const newSize = round3(cashSize / newShort);
+        const reAdjust = await await placeAndSetupOrder({ price: newShort, quantity: newSize }, placeShort, shortFilled);
         if (!reAdjust) {
             inCallback = false;
             return;
         };
 
-        clearInterval(checkPriceRef);
-        console.log(`re-adjusted to strike at ${marketPrice} strike: ${strikePrice}`);
+        console.log(`re-adjusted short to ${newShort} market price: ${marketResponse.markPrice}`);
         await cancelOrder(shortOrderId);
+        shortOrderId = reAdjust.orderId;
+        shortPrice = newShort;
+        inCallback = false;
 
+        if (newShort >= strikePrice) clearInterval(checkPriceRef);
     }, checkInterval);
 
     //console.log(`${Date.now()} ${shortOrderId} Close Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
@@ -193,9 +198,8 @@ async function closeFilled(message) {
 
 async function shortFilled(message) {
     const lastPrice = message.o.L;
-    let closePrice = round1(lastPrice * (1 + closePercent));
-
-    if (lastPrice < message.o.sp) closePrice = Math.min(closePrice, message.o.sp);
+    let closePrice = round1(lastPrice * (1 + tolerance));
+    const shortPrice = message.o.sp;
 
     if (checkPriceRef) clearInterval(checkPriceRef);
     delete executions[`FILLED:${message.o.i}`];
@@ -206,38 +210,41 @@ async function shortFilled(message) {
     while (!closeResponse) {
         closeResponse = await placeAndSetupOrder({ price: closePrice }, placeClose, closeFilled);
     }
-    console.log(`placed close at ${closePrice} lastPrice: ${lastPrice} sp:${message.o.sp}`);
+    console.log(`placed close at ${closePrice} lastPrice: ${lastPrice} sp:${shortPrice}`);
 
-    if (closePrice < strikePrice) return;
-    const closeOrderId = closeResponse.orderId;
+    if (closePrice < shortPrice) return;
+    let closeOrderId = closeResponse.orderId;
 
-    const strikeCheck = strikePrice * (1 - closePercent);
     let inCallback = false;
     checkPriceRef = setInterval(async () => {
         if (inCallback) return;
         inCallback = true;
 
         const marketResponse = await unsignedFetch('premiumIndex', { symbol }, 'GET');
-        if (!marketResponse)  {
+        if (!marketResponse) {
             inCallback = false;
             return;
         };
 
-        const marketPrice = round1(marketResponse.markPrice);
-        if (marketPrice >= strikeCheck)  {
+        const newClose = round1(marketResponse.markPrice * (1 + tolerance));
+        if (newClose >= closePrice) {
             inCallback = false;
             return;
         };
 
-        const reAdjust = await placeAndSetupOrder({ price: strikePrice }, placeClose, closeFilled);
-        if (!reAdjust)  {
+        const reAdjust = await placeAndSetupOrder({ price: newClose }, placeClose, closeFilled);
+        if (!reAdjust) {
             inCallback = false;
             return;
         };
 
-        clearInterval(checkPriceRef);
-        console.log(`re-adjusted close at ${strikePrice} market: ${marketPrice}`);
+        console.log(`re-adjusted close at ${newClose} market: ${marketResponse.markPrice}`);
         await cancelOrder(closeOrderId);
+        closeOrderId = reAdjust.orderId;
+        closePrice = newClose;
+        inCallback = false;
+
+        if (newClose <= shortPrice) clearInterval(checkPriceRef);
 
     }, checkInterval);
 
@@ -262,23 +269,42 @@ async function onMessage(data) {
 }
 
 try {
-    console.log(`strike-price ${strikePrice}`);
-    var { listenKey } = await unsignedFetch('listenKey');
-    if (!listenKey) process.exit();
-
-    var socket = new WebSocket(`${baseWssUrl}/${listenKey}`);
-    socket.on('message', async data => await onMessage(data));
-
-    var listenRef = setInterval(async () => {
-        console.log('renewing key');
-        await unsignedFetch('listenKey', 'PUT');
-    }, 3540000/*59 minutes: 59 minutes * 60 seconds * 1000 milliseconds*/);
-
-    await placeStrike();
-    executions['LIQUIDATION'] = placeStrike;
-
-    process.stdin.resume();
     process.stdin.on('data', process.exit.bind(process, 0));
+    console.log(`strike-price ${strikePrice}`);
+
+    while (true) {
+        var { listenKey } = await unsignedFetch('listenKey');
+        if (!listenKey) process.exit();
+
+        var socket = new WebSocket(`${baseWssUrl}/${listenKey}`);
+        socket.on('message', async data => await onMessage(data));
+
+        var listenRef = setInterval(async () => {
+            console.log('renewing key');
+            await unsignedFetch('listenKey', 'PUT');
+        }, 3540000/*59 minutes: 59 minutes * 60 seconds * 1000 milliseconds*/);
+
+        executions['LIQUIDATION'] = placeStrike;
+        var orders = await signedFetch('openOrders', { symbol }, 'GET') || [];
+
+        if (orders.length == 0) {
+            await placeStrike();
+        }
+
+        for (let i = 0; i < orders.length; i++) {
+            let order = orders[i];
+            if (order.side == "BUY") {
+                executions[`FILLED:${order.orderId}`] = closeFilled
+            }
+            
+            if (order.side == "SELL") {
+                executions[`FILLED:${order.orderId}`] = shortFilled
+            }
+        }
+
+        await asyncSleep(86400000/*24 hours: 24 hours * 60 minutes * 60 seconds * 1000 milliseconds*/)
+    }
+
 } catch (ex) {
     console.error(ex);
 }
