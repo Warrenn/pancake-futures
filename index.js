@@ -103,6 +103,14 @@ const placeShort = async (o) => await signedFetch('order', {
     "quantity": o.quantity
 });
 
+const placeMarketClose = async (o) => await signedFetch('order', {
+    "symbol": symbol,
+    "side": "BUY",
+    "type": "MARKET",
+    "reduceOnly": true,
+    "quantity": o.quantity
+});
+
 async function placeAndSetupOrder(order, placeOrder, callBack) {
     const response = await placeOrder(order);
     if (!response) return null;
@@ -115,17 +123,11 @@ async function placeAndSetupOrder(order, placeOrder, callBack) {
 
 function createExpiredCallback(order, placeOrder, callback) {
     return async message => {
-        const expiredKey = `EXPIRED:${message.o.i}`;
-        console.log(expiredKey)
-        await asyncSleep(3000);
-
-        if (!(expiredKey in executions)) return;
-        console.log(`${expiredKey} execution`);
-        delete executions[expiredKey];
-
-        let orderResponse;
-        while (!orderResponse) {
-            orderResponse = await placeAndSetupOrder(order, placeOrder, callback);
+        console.log(`EXPIRED:${message.o.i}`);
+        if (message.o.S == "BUY") {
+            var size = round3(cashSize / order.price);
+            await placeMarketClose({ quantity: size });
+            await closeFilled(message);
         }
     }
 }
@@ -152,6 +154,9 @@ async function cancelOrder(orderId) {
 }
 
 async function closeFilled(message) {
+    if (`WORKING:${orderId}` in executions) return;
+    executions[`WORKING:${orderId}`] = true;
+
     const lastPrice = message.o.L;
     let shortPrice = round1(lastPrice * (1 - tolerance));
     shortPrice = Math.min(shortPrice, strikePrice);
