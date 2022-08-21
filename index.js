@@ -26,6 +26,7 @@ const strikePrice = parseFloat(process.env.PANCAKE_STRIKE_PRICE) || (() => { thr
 
 let executions = {};
 let checkPriceRef = null;
+let inCallback = false;
 
 const round1 = num => Math.round(num * 10) / 10;
 const round3 = num => Math.round(num * 1000) / 1000;
@@ -124,26 +125,32 @@ async function placeAndSetupOrder(order, placeOrder, callBack) {
 
 function createExpiredCallback(order, placeOrder, callback) {
     return async message => {
-        console.log(`EXPIRED:${message.o.i}`);
+        const expiredOrderId = message.o.i;
+        console.log(`EXPIRED:${expiredOrderId}`);
         var orders = await signedFetch('allOrders', { symbol }, 'GET') || [];
         for (let i = 0; i < orders.length; i++) {
             let order = orders[i];
-            if (order.orderId == message.o.i && order.status == 'FILLED') {
-                console.log(`${message.o.i} side ${message.o.S} already filled`);
+            if (order.orderId == expiredOrderId && order.status == 'FILLED') {
+                console.log(`${expiredOrderId} side ${message.o.S} already filled`);
                 return;
             }
         }
 
-        delete executions[`FILLED:${message.o.i}`];
-        delete executions[`EXPIRED:${message.o.i}`];
+        delete executions[`FILLED:${expiredOrderId}`];
+        delete executions[`EXPIRED:${expiredOrderId}`];
 
         if (message.o.S == "SELL") {
-            while (!(await placeAndSetupOrder(order, placeOrder, callback))) { }
+            let replaceOrder;
+            while (true) {
+                replaceOrder = await placeAndSetupOrder(order, placeOrder, callback);
+                if (replaceOrder && replaceOrder.orderId) break;
+            };
+            console.log(`${replaceOrder.orderId} replaced order ${order} for ${expiredOrderId}`);
             return;
         }
 
         const size = round3(cashSize / message.o.sp);
-
+        console.log(`${expiredOrderId} placing market order at ${message.o.L} for ${size}`);
         while (!(await placeMarketClose({ quantity: size }))) { }
         await callback(message);
     }
@@ -174,25 +181,30 @@ async function closeFilled(message) {
     const orderId = message.o.i;
     const stopPrice = message.o.sp;
     const lastPrice = message.o.L;
-    const lastPriceTolerance = round1(lastPrice * (1 - tolerance));
-    const stopPriceTolerance = round1(stopPrice * (1 - tolerance));
-    const shortPrice = Math.max(lastPriceTolerance, stopPriceTolerance);
-    const shortPriceTolerance = round1(stopPrice * (1 + tolerance));
-    const strikePriceTolerance = round1(strikePrice * (1 + tolerance));
+    const shortPrice = round1(Math.max(
+        lastPrice * (1 - tolerance),
+        stopPrice * (1 - tolerance)));
     const size = round3(cashSize / shortPrice);
+
+    const shortPriceThreshold = round1(Math.min(
+        stopPrice * (1 + tolerance),
+        strikePrice * (1 + tolerance)));
+    const nextShortPrice = round1(Math.min(stopPrice, strikePrice));
+    const nextSize = round3(cashSize / nextShortPrice);
 
     if (checkPriceRef) clearInterval(checkPriceRef);
     delete executions[`FILLED:${orderId}`];
     delete executions[`EXPIRED:${orderId}`];
 
     let shortResponse;
-    while (!shortResponse) {
+    while (true) {
         shortResponse = await placeAndSetupOrder({ price: shortPrice, quantity: size }, placeShort, shortFilled);
+        if (shortResponse && shortResponse.orderId) break;
     }
     let shortOrderId = shortResponse.orderId;
     console.log(`${shortOrderId} place short at ${shortPrice} size: ${size} lastPrice:${lastPrice} sp:${stopPrice} closeOrderId:${orderId}`);
+    console.log(`${shortOrderId} threshold: ${shortPriceThreshold} next short price :${nextShortPrice} next size ${nextSize}`);
 
-    let inCallback = false;
     checkPriceRef = setInterval(async () => {
         if (inCallback) return;
         inCallback = true;
@@ -204,25 +216,21 @@ async function closeFilled(message) {
         };
 
         const marketPrice = marketResponse.markPrice;
-        if (marketPrice <= shortPriceTolerance && marketPrice <= strikePriceTolerance) {
+        if (marketPrice <= shortPriceThreshold) {
             inCallback = false;
             return;
         }
 
-        const newShortPrice = (marketPrice > strikePriceTolerance) ? strikePrice : stopPrice;
-        const newSize = round3(cashSize / newShortPrice);
-
         let reAdjust;
-        while (!reAdjust) {
-            reAdjust = placeAndSetupOrder({ price: newShortPrice, quantity: newSize }, placeShort, shortFilled);
+        while (true) {
+            reAdjust = placeAndSetupOrder({ price: nextShortPrice, quantity: nextSize }, placeShort, shortFilled);
+            if (reAdjust && reAdjust.orderId) break;
         }
 
-        console.log(`${reAdjust.orderId} re-adjusted short to ${newShortPrice} new size ${newSize} market price: ${marketPrice} oldId:${shortOrderId}`);
+        console.log(`${reAdjust.orderId} re-adjusted short to ${nextShortPrice} new size ${nextSize} market price: ${marketPrice} oldId:${shortOrderId}`);
         await cancelOrder(shortOrderId);
-        shortOrderId = reAdjust.orderId;
         inCallback = false;
-
-        if (marketPrice > strikePriceTolerance) clearInterval(checkPriceRef);
+        clearInterval(checkPriceRef);
     }, checkInterval);
 
     //console.log(`${Date.now()} ${shortOrderId} Close Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
@@ -231,11 +239,13 @@ async function closeFilled(message) {
 async function shortFilled(message) {
     const lastPrice = message.o.L;
     const stopPrice = message.o.sp;
-    const lastPriceTolerance = round1(lastPrice * (1 + tolerance));
-    const stopPriceTolerance = round1(stopPrice * (1 + tolerance));
-    let closePrice = Math.min(lastPriceTolerance, stopPriceTolerance);
-    const takeProfitPrice = round1(closePrice * (1 - takeProfit));
-    const takeProfitTolerance = round1(takeProfitPrice * (1 - tolerance));
+    const orderId = message.o.i;
+    const closePrice = round1(Math.min(
+        lastPrice * (1 + tolerance),
+        stopPrice * (1 + tolerance)))
+
+    const nextClosePrice = round1(stopPrice * (1 - takeProfit));
+    const closeThreshold = round1(stopPrice * (1 - (tolerance + takeProfit)));
 
     if (checkPriceRef) clearInterval(checkPriceRef);
     delete executions[`FILLED:${message.o.i}`];
@@ -247,7 +257,8 @@ async function shortFilled(message) {
         closeResponse = await placeAndSetupOrder({ price: closePrice }, placeClose, closeFilled);
     }
     const closeOrderId = closeResponse.orderId;
-    console.log(`${closeOrderId} placed close at ${closePrice} lastPrice: ${lastPrice} sp:${stopPrice} shortOrderId:${message.o.i}`);
+    console.log(`${closeOrderId} placed close at ${closePrice} lastPrice: ${lastPrice} sp:${stopPrice} shortOrderId:${orderId}`);
+    console.log(`${closeOrderId} next close: ${nextClosePrice} threshold: ${closeThreshold}`);
 
     const accountResponse = await signedFetch('account', null, 'GET');
     while (!(await signedFetch('positionMargin', {
@@ -255,9 +266,8 @@ async function shortFilled(message) {
         "amount": accountResponse.availableBalance,
         "type": 1
     }))) { };
-    console.log(`repositioned margin with available balance ${accountResponse.availableBalance}`);
+    console.log(`${closeOrderId} repositioned margin with available balance ${accountResponse.availableBalance} shortOrderId:${orderId}`);
 
-    let inCallback = false;
     checkPriceRef = setInterval(async () => {
         if (inCallback) return;
         inCallback = true;
@@ -268,21 +278,22 @@ async function shortFilled(message) {
             return;
         };
 
-        if (marketResponse.markPrice >= takeProfitTolerance) {
+        const marketPrice = marketResponse.markPrice;
+        if (marketPrice >= closeThreshold) {
             inCallback = false;
             return;
         };
 
-        const reAdjust = await placeAndSetupOrder({ price: takeProfitPrice }, placeClose, closeFilled);
-        if (!reAdjust) {
-            inCallback = false;
-            return;
-        };
+        let reAdjust;
+        while (true) {
+            reAdjust = await placeAndSetupOrder({ price: nextClosePrice }, placeClose, closeFilled);
+            if (reAdjust && reAdjust.orderId) break;
+        }
 
-        console.log(`${reAdjust.orderId} re-adjusted close at ${takeProfitPrice} market: ${marketResponse.markPrice} oldId:${closeOrderId}`);
+        console.log(`${reAdjust.orderId} re-adjusted close at ${nextClosePrice} market: ${marketResponse.markPrice} oldId:${closeOrderId}`);
         await cancelOrder(closeOrderId);
         clearInterval(checkPriceRef);
-
+        inCallback = false;
     }, checkInterval);
 
     //console.log(`${Date.now()} ${closeOrderId} Short Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
