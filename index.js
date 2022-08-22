@@ -139,14 +139,14 @@ function createExpiredCallback(order, placeOrder, callback) {
         delete executions[`FILLED:${expiredOrderId}`];
         delete executions[`EXPIRED:${expiredOrderId}`];
 
-        if (message.o.S == "BUY" && shortSize) {
-            while (!(await placeMarketClose({ quantity: shortSize }))) { }
-        } else {
+        if (message.o.S == "SELL" && shortSize) {
             await placeOrder(order, placeOrder, callback);
+            return;
         }
+        while (!(await placeMarketClose({ quantity: shortSize }))) { }
+        await callback(message);
 
         console.log(`${expiredOrderId} placing market order at ${message.o.L} for ${size}`);
-        await callback(message);
     }
 }
 
