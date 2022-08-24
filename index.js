@@ -135,7 +135,7 @@ async function placeAndSetupOrder(order, placeOrder, callBack) {
     return response;
 }
 
-function expiredCallback(message) {
+async function expiredCallback(message) {
     const expiredOrderId = message.o.i;
     console.log(`EXPIRED:${expiredOrderId}`);
     var orders = await signedFetch('allOrders', { symbol }, 'GET') || [];
