@@ -131,29 +131,27 @@ async function placeAndSetupOrder(order, placeOrder, callBack) {
     const responseId = response.orderId;
 
     executions[`FILLED:${responseId}`] = callBack;
-    executions[`EXPIRED:${responseId}`] = createExpiredCallback(order, placeOrder, callBack);
+    executions[`EXPIRED:${responseId}`] = expiredCallback;
     return response;
 }
 
-function createExpiredCallback(order, placeOrder, callback) {
-    return async message => {
-        const expiredOrderId = message.o.i;
-        console.log(`EXPIRED:${expiredOrderId}`);
-        var orders = await signedFetch('allOrders', { symbol }, 'GET') || [];
-        for (let i = 0; i < orders.length; i++) {
-            let order = orders[i];
-            if (order.orderId == expiredOrderId && order.status == 'FILLED') {
-                console.log(`${expiredOrderId} side ${message.o.S} already filled`);
-                return;
-            }
+function expiredCallback(message) {
+    const expiredOrderId = message.o.i;
+    console.log(`EXPIRED:${expiredOrderId}`);
+    var orders = await signedFetch('allOrders', { symbol }, 'GET') || [];
+    for (let i = 0; i < orders.length; i++) {
+        let order = orders[i];
+        if (order.orderId == expiredOrderId && order.status == 'FILLED') {
+            console.log(`${expiredOrderId} side ${message.o.S} already filled`);
+            return;
         }
-
-        delete executions[`FILLED:${expiredOrderId}`];
-        delete executions[`EXPIRED:${expiredOrderId}`];
-
-        console.log(`${expiredOrderId} Expired re initializing`);
-        await initialize();
     }
+
+    delete executions[`FILLED:${expiredOrderId}`];
+    delete executions[`EXPIRED:${expiredOrderId}`];
+
+    console.log(`${expiredOrderId} Expired re initializing`);
+    await initialize();
 }
 
 async function placeStrike() {
@@ -251,14 +249,22 @@ async function initialize() {
     let haveShortOrder = false;
     let haveCloseOrder = false;
     const currentPrice = results[1].markPrice;
-    const holdingPosition = results[2] && results[2].length > 0;
+    const holdingPosition = results[2] && results[2].length && parseFloat(results[2][0].positionAmt) > 0;
     const positionSize = (holdingPosition) ? results[2][0].positionAmt : 0;
 
     for (let i = 0; i < orders.length; i++) {
         const order = orders[i];
-        if (order.side == "SELL") haveShortOrder = true;
-        if (order.side == "BUY" && order.reduceOnly) haveCloseOrder = true;
-        if (order.side == "BUY" && order.closePosition) haveCloseOrder = true;
+        const orderId = order.orderId;
+        if (order.side == "SELL") {
+            haveShortOrder = true;
+            executions[`FILLED:${orderId}`] = shortFilled;
+            executions[`EXPIRED:${orderId}`] = expiredCallback;
+        }
+        if (order.side == "BUY" && (order.reduceOnly || order.closePosition) {
+            haveCloseOrder = true;
+            executions[`FILLED:${orderId}`] = closeFilled;
+            executions[`EXPIRED:${orderId}`] = expiredCallback;
+        }
     }
 
     if (currentPrice > strikePrice && holdingPosition) {
