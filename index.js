@@ -260,7 +260,7 @@ async function initialize() {
             executions[`FILLED:${orderId}`] = shortFilled;
             executions[`EXPIRED:${orderId}`] = expiredCallback;
         }
-        if (order.side == "BUY" && (order.reduceOnly || order.closePosition) {
+        if (order.side == "BUY" && (order.reduceOnly || order.closePosition)) {
             haveCloseOrder = true;
             executions[`FILLED:${orderId}`] = closeFilled;
             executions[`EXPIRED:${orderId}`] = expiredCallback;
