@@ -115,6 +115,14 @@ const placeMarketClose = async (o) => await signedFetch('order', {
     "quantity": o.quantity
 });
 
+
+const placeMarketShort = async (o) => await signedFetch('order', {
+    "symbol": symbol,
+    "side": "SELL",
+    "type": "MARKET",
+    "quantity": o.quantity
+});
+
 async function placeAndSetupOrder(order, placeOrder, callBack) {
     await signedFetch('allOpenOrders', { symbol }, "DELETE");
 
@@ -143,15 +151,8 @@ function createExpiredCallback(order, placeOrder, callback) {
         delete executions[`FILLED:${expiredOrderId}`];
         delete executions[`EXPIRED:${expiredOrderId}`];
 
-        if (message.o.S == "SELL") {
-            while (!(await placeOrder(order, placeOrder, callback))) { };
-            return;
-        }
-
-        while (!(await placeMarketClose({ quantity: size }))) { }
-        await callback(message);
-
-        console.log(`${expiredOrderId} placing market order at ${message.o.L} for ${size}`);
+        console.log(`${expiredOrderId} Expired re initializing`);
+        await initialize();
     }
 }
 
@@ -199,17 +200,18 @@ async function shortFilled(message) {
     const lastPrice = message.o.L;
     const stopPrice = message.o.sp;
     const orderId = message.o.i;
- 
-    delete executions[`FILLED:${message.o.i}`];
-    delete executions[`EXPIRED:${message.o.i}`];
+    const price = round1(strikePrice * (1 + tolerance));
+
+    delete executions[`FILLED:${orderId}`];
+    delete executions[`EXPIRED:${orderId}`];
 
     // keep retrying on failures
     let closeResponse;
     while (!closeResponse) {
-        closeResponse = await placeAndSetupOrder({ price: strikePrice }, placeClose, closeFilled);
+        closeResponse = await placeAndSetupOrder({ price }, placeClose, closeFilled);
     }
     const closeOrderId = closeResponse.orderId;
-    console.log(`${closeOrderId} placed close at ${strikePrice} lastPrice: ${lastPrice} sp:${stopPrice} shortOrderId:${orderId}`);
+    console.log(`${closeOrderId} placed close at ${price} lastPrice: ${lastPrice} sp:${stopPrice} shortOrderId:${orderId}`);
 
     const accountResponse = await signedFetch('account', null, 'GET');
     while (!(await signedFetch('positionMargin', {
@@ -239,6 +241,54 @@ async function onMessage(data) {
     }
 }
 
+async function initialize() {
+    const openOrdersPromise = signedFetch('openOrders', { symbol }, 'GET');
+    const premiumIndexPromise = unsignedFetch('premiumIndex', { symbol }, 'GET');
+    const positionRiskPromise = signedFetch('positionRisk', { symbol }, 'GET');
+
+    const results = await Promise.all([openOrdersPromise, premiumIndexPromise, positionRiskPromise]);
+    const orders = results[0] || [];
+    let haveShortOrder = false;
+    let haveCloseOrder = false;
+    const currentPrice = results[1].markPrice;
+    const holdingPosition = results[2] && results[2].length > 0;
+    const positionSize = (holdingPosition) ? results[2][0].positionAmt : 0;
+
+    for (let i = 0; i < orders.length; i++) {
+        const order = orders[i];
+        if (order.side == "SELL") haveShortOrder = true;
+        if (order.side == "BUY" && order.reduceOnly) haveCloseOrder = true;
+        if (order.side == "BUY" && order.closePosition) haveCloseOrder = true;
+    }
+
+    if (currentPrice > strikePrice && holdingPosition) {
+        await signedFetch('allOpenOrders', { symbol }, 'DELETE');
+        await placeMarketClose({ quantity: positionSize });
+        await placeStrike();
+        return;
+    }
+
+    if (currentPrice > strikePrice && !holdingPosition && !haveShortOrder) {
+        await signedFetch('allOpenOrders', { symbol }, 'DELETE');
+        await placeStrike();
+        return;
+    }
+
+    if (currentPrice <= strikePrice && holdingPosition && !haveCloseOrder) {
+        await signedFetch('allOpenOrders', { symbol }, 'DELETE');
+        await shortFilled({ o: { sp: currentPrice, L: currentPrice } });
+        return;
+    }
+
+    if (currentPrice <= strikePrice && !holdingPosition) {
+        await signedFetch('allOpenOrders', { symbol }, 'DELETE');
+        const quantity = round3(cashSize / currentPrice);
+        await placeMarketShort({ quantity });
+        await shortFilled({ o: { sp: currentPrice, L: currentPrice } });
+    }
+
+}
+
 try {
     process.stdin.on('data', process.exit.bind(process, 0));
     console.log(`strike-price ${strikePrice} cash-size ${cashSize}`);
@@ -257,24 +307,7 @@ try {
         }, 3540000/*59 minutes: 59 minutes * 60 seconds * 1000 milliseconds*/);
 
         executions['LIQUIDATION'] = placeStrike;
-        var orders = await signedFetch('openOrders', { symbol }, 'GET') || [];
-
-        if (orders.length == 0) {
-            await placeStrike();
-        }
-
-        for (let i = 0; i < orders.length; i++) {
-            let order = orders[i];
-            if (order.side == "BUY") {
-                executions[`FILLED:${order.orderId}`] = closeFilled
-                executions[`EXPIRED:${order.orderId}`] = createExpiredCallback({ price: order.price }, placeClose, closeFilled);
-            }
-
-            if (order.side == "SELL") {
-                executions[`FILLED:${order.orderId}`] = shortFilled
-                executions[`EXPIRED:${order.orderId}`] = createExpiredCallback({ price: order.price, quantity: order.origQty }, placeShort, shortFilled);
-            }
-        }
+        await initialize();
 
         await asyncSleep(86400000/*24 hours: 24 hours * 60 minutes * 60 seconds * 1000 milliseconds*/);
     }
