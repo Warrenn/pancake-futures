@@ -1,37 +1,60 @@
-const { exit } = await
-import('node:process');
-const { WebSocket } = await
-import('ws');
-const { createHmac } = await
-import('node:crypto');
-const querystring = await
-import('node:querystring');
-await
-import('dotenv/config');
+const { exit } = await import('node:process');
+const { WebSocket } = await import('ws');
+const { createHmac } = await import('node:crypto');
+const querystring = await import('node:querystring');
+await import('dotenv/config');
 const { setTimeout: asyncSleep } = await import('timers/promises');
+const { AWS } = await import('aws-sdk');
 
 const baseApiUrl = 'https://fapi.apollox.finance/fapi/v1';
 const baseWssUrl = 'wss://fstream.apollox.finance/ws';
 const recvWindow = 99999;
-const checkInterval = 3000;
 
-const key = process.env.PANCAKE_KEY || (() => { throw "access key required"; })();
-const secret = process.env.PANCAKE_SECRET || (() => { throw "secret key required"; })();
+//TODO:parameter for secret and key, parameter for the settings, cloudwatch group and stream
+//TODO:Fetch encrypted parameters from the parameter store
 
-const symbol = process.env.PANCAKE_SYMBOL || (() => { throw "symbol required"; })();
-const tolerance = parseFloat(process.env.PANCAKE_TOLERANCE) || (() => { throw "tolerance needs to be a number"; })();
-const takeProfit = parseFloat(process.env.PANCAKE_TAKE_PROFIT) || (() => { throw "take profit needs to be a number"; })();
-const cashSize = parseFloat(process.env.PANCAKE_CASH_SIZE) || (() => { throw "cash size needs to be a number"; })();
-const strikePrice = parseFloat(process.env.PANCAKE_STRIKE_PRICE) || (() => { throw "strike price needs to be a number"; })();
+const region = process.env.AWS_REGION || 'us-east-2';
+const apiParamName = process.env.PANCAKE_API_CREDENTIALS;
+const settingsParamName = process.env.PANCAKE_SETTINGS;
+const logGroupName = process.env.PANCAKE_LOG_GROUP;
+const ssm = new AWS.SSM();
+const CWClient = new AWS.CloudWatchLogs({ region });
 
-let executions = {};
-let checkPriceRef = null;
-let shortSize;
+const apiParameter = await ssm.getParameter({ Name: apiParamName, WithDecryption: true }).promise();
+const { key, secret } = JSON.parse(apiParameter.Parameter.Value);
 
-const round1 = num => Math.round(num * 10) / 10;
-const round3 = num => Math.round(num * 1000) / 1000;
+let settingsParameter = await ssm.getParameter({ Name: settingsParamName }).promise();
+let { symbol, tolerance, cashSize, strikePrice } = JSON.parse(settingsParameter.Parameter.Value);
 
 const size = round3(cashSize / strikePrice);
+let executions = {};
+let logStreamName = getLogStreamName();
+
+function round1(num) { return Math.round(num * 10) / 10; };
+function round3(num) { return Math.round(num * 1000) / 1000; };
+
+function getLogStreamName() {
+    const today = new Date();
+    if (today.getUTCHours() < 8) today.setDate(today.getDate() - 1);
+    return `${symbol} ${today.getUTCFullYear()}-${(today.getUTCMonth() + 1)}-${today.getUTCDate()}`;
+}
+
+async function logError(error) {
+    console.error(error);
+    await logEvent(`ERROR: ${error}`);
+}
+
+async function logEvent(message) {
+    console.log(message);
+    await CWClient.putLogEvents({
+        logGroupName,
+        logStreamName,
+        logEvents: [{
+            timestamp: (new Date()).getTime(),
+            message: message
+        }]
+    }).promise();
+}
 
 async function signedFetch(action, queryObj, method) {
     queryObj = {
@@ -70,8 +93,8 @@ async function callFetch(url, method, key) {
         }
         return responseJson;
     } catch (e) {
-        console.error(`error fetching ${method} ${url}`);
-        console.error(e);
+        await logError(`error fetching ${method} ${url}`);
+        await logError(e);
         return null;
     }
 }
@@ -137,12 +160,12 @@ async function placeAndSetupOrder(order, placeOrder, callBack) {
 
 async function expiredCallback(message) {
     const expiredOrderId = message.o.i;
-    console.log(`EXPIRED:${expiredOrderId}`);
+    await logEvent(`EXPIRED:${expiredOrderId}`);
     var orders = await signedFetch('allOrders', { symbol }, 'GET') || [];
     for (let i = 0; i < orders.length; i++) {
         let order = orders[i];
         if (order.orderId == expiredOrderId && order.status == 'FILLED') {
-            console.log(`${expiredOrderId} side ${message.o.S} already filled`);
+            await logEvent(`${expiredOrderId} side ${message.o.S} already filled`);
             return;
         }
     }
@@ -150,7 +173,7 @@ async function expiredCallback(message) {
     delete executions[`FILLED:${expiredOrderId}`];
     delete executions[`EXPIRED:${expiredOrderId}`];
 
-    console.log(`${expiredOrderId} Expired re initializing`);
+    await logEvent(`${expiredOrderId} Expired re initializing`);
     await initialize();
 }
 
@@ -161,7 +184,7 @@ async function placeStrike() {
         strikeResponse = await placeAndSetupOrder({ price: strikePrice, quantity: size }, placeShort, shortFilled);
     }
 
-    console.log(`strike order placed price:${strikePrice} size:${size} cash-size:${cashSize}`);
+    await logEvent(`strike order placed price:${strikePrice} size:${size} cash-size:${cashSize}`);
     return strikeResponse;
 }
 
@@ -189,9 +212,7 @@ async function closeFilled(message) {
         if (shortResponse && shortResponse.orderId) break;
     }
     let shortOrderId = shortResponse.orderId;
-    console.log(`${shortOrderId} place short at ${strikePrice} size: ${size} lastPrice:${lastPrice} sp:${stopPrice} closeOrderId:${orderId}`);
-
-    //console.log(`${Date.now()} ${shortOrderId} Close Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
+    await logEvent(`${shortOrderId} place short at ${strikePrice} size: ${size} lastPrice:${lastPrice} sp:${stopPrice} closeOrderId:${orderId}`);
 }
 
 async function shortFilled(message) {
@@ -209,7 +230,7 @@ async function shortFilled(message) {
         closeResponse = await placeAndSetupOrder({ price }, placeClose, closeFilled);
     }
     const closeOrderId = closeResponse.orderId;
-    console.log(`${closeOrderId} placed close at ${price} lastPrice: ${lastPrice} sp:${stopPrice} shortOrderId:${orderId}`);
+    await logEvent(`${closeOrderId} placed close at ${price} lastPrice: ${lastPrice} sp:${stopPrice} shortOrderId:${orderId}`);
 
     const accountResponse = await signedFetch('account', null, 'GET');
     while (!(await signedFetch('positionMargin', {
@@ -217,9 +238,7 @@ async function shortFilled(message) {
         "amount": accountResponse.availableBalance,
         "type": 1
     }))) { };
-    console.log(`${closeOrderId} repositioned margin with available balance ${accountResponse.availableBalance} shortOrderId:${orderId}`);
-
-    //console.log(`${Date.now()} ${closeOrderId} Short Filled Side: ${message.o.S} Order Type:${message.o.o} Execution Type:${message.o.x} Order Status:${message.o.X} Position Side:${message.o.ps}`);
+    await logEvent(`${closeOrderId} repositioned margin with available balance ${accountResponse.availableBalance} shortOrderId:${orderId}`);
 }
 
 async function onMessage(data) {
@@ -234,8 +253,8 @@ async function onMessage(data) {
 
         await execFunc(message);
     } catch (ex) {
-        console.error('message error');
-        console.error(ex);
+        await logError('message error');
+        await logError(ex);
     }
 }
 
@@ -297,27 +316,40 @@ async function initialize() {
 
 try {
     process.stdin.on('data', process.exit.bind(process, 0));
-    console.log(`strike-price ${strikePrice} cash-size ${cashSize}`);
+    await logEvent(`strike-price ${strikePrice} cash-size ${cashSize}`);
 
     while (true) {
+        settingsParameter = await ssm.getParameter({ Name: settingsParamName }).promise();
+        ({ symbol, tolerance, cashSize, strikePrice } = JSON.parse(settingsParameter.Parameter.Value));
+        logStreamName = getLogStreamName();
+
         var { listenKey } = await unsignedFetch('listenKey');
         if (!listenKey) process.exit();
 
         var socket = new WebSocket(`${baseWssUrl}/${listenKey}`);
         socket.on('message', async data => await onMessage(data));
-        console.log(`listening for events key:${listenKey}`);
+        await logEvent(`listening for events key:${listenKey}`);
 
         var listenRef = setInterval(async () => {
-            console.log('renewing key');
+            await logEvent('renewing key');
             await unsignedFetch('listenKey', 'PUT');
         }, 3540000/*59 minutes: 59 minutes * 60 seconds * 1000 milliseconds*/);
 
         executions['LIQUIDATION'] = placeStrike;
         await initialize();
 
-        await asyncSleep(86400000/*24 hours: 24 hours * 60 minutes * 60 seconds * 1000 milliseconds*/);
+        const today = new Date();
+        const now = today.getTime();
+        today.setDate(today.getDate() + 1);
+        today.setUTCHours(8);
+        today.setMinutes(0);
+        today.setSeconds(0);
+        today.setMilliseconds(0);
+        const msDiff = (today.getTime() - now);
+
+        await asyncSleep(msDiff);
     }
 
 } catch (ex) {
-    console.error(ex);
+    await logError(ex);
 }
