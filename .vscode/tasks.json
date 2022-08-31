@@ -1,0 +1,53 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "docker-build",
+			"label": "docker-build",
+			"platform": "node",
+			"dockerBuild": {
+				"dockerfile": "${workspaceFolder}/Dockerfile",
+				"context": "${workspaceFolder}",
+				"pull": true
+			}
+		},
+		{
+			"type": "docker-run",
+			"label": "docker-run: release",
+			"dependsOn": [
+				"docker-build"
+			],
+			"platform": "node"
+		},
+		{
+			"type": "docker-run",
+			"label": "docker-run: debug",
+			"dependsOn": [
+				"docker-build"
+			],
+			"dockerRun": {
+				"env": {
+					"DEBUG": "*",
+					"NODE_ENV": "development",
+					"AWS_PROFILE": "busyweb-admin",
+					"PANCAKE_REGION": "af-south-1",
+					"PANCAKE_API_CREDENTIALS": "/live/pancake-futures/api-credentials",
+					"PANCAKE_SETTINGS": "/live/pancake-futures/settings",
+					"PANCAKE_LOG_GROUP": "pancake-futures-application",
+					"AWS_CONFIG_FILE": "/usr/src/app/.aws/credentials",
+					"AWS_SDK_LOAD_CONFIG": "1"
+				},
+				"volumes": [
+					{
+						"localPath": "C:/Users/${env:USERNAME}/.aws",
+						"containerPath": "/usr/src/app/.aws",
+						"permissions": "ro"
+					}
+				]
+			},
+			"node": {
+				"enableDebugging": true
+			}
+		}
+	]
+}

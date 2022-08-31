@@ -27,3 +27,4 @@ node_modules
 # Build
 dist
 tsconfig.tsbuildinfo
+*.zip

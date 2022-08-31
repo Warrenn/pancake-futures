@@ -4,39 +4,46 @@ const { createHmac } = await import('node:crypto');
 const querystring = await import('node:querystring');
 await import('dotenv/config');
 const { setTimeout: asyncSleep } = await import('timers/promises');
-const { AWS } = await import('aws-sdk');
+const AWS = await import('aws-sdk');
 
 const baseApiUrl = 'https://fapi.apollox.finance/fapi/v1';
 const baseWssUrl = 'wss://fstream.apollox.finance/ws';
 const recvWindow = 99999;
 
-//TODO:parameter for secret and key, parameter for the settings, cloudwatch group and stream
-//TODO:Fetch encrypted parameters from the parameter store
-
-const region = process.env.AWS_REGION || 'us-east-2';
+const region = process.env.PANCAKE_REGION;
 const apiParamName = process.env.PANCAKE_API_CREDENTIALS;
 const settingsParamName = process.env.PANCAKE_SETTINGS;
-const logGroupName = process.env.PANCAKE_LOG_GROUP;
-const ssm = new AWS.SSM();
-const CWClient = new AWS.CloudWatchLogs({ region });
+const logGroupName = `${process.env.PANCAKE_LOG_GROUP}`;
+
+const ssm = new AWS.default.SSM({ region });
+const CWClient = new AWS.default.CloudWatchLogs({ region });
 
 const apiParameter = await ssm.getParameter({ Name: apiParamName, WithDecryption: true }).promise();
 const { key, secret } = JSON.parse(apiParameter.Parameter.Value);
 
+let nextSequenceToken = null;
 let settingsParameter = await ssm.getParameter({ Name: settingsParamName }).promise();
 let { symbol, tolerance, cashSize, strikePrice } = JSON.parse(settingsParameter.Parameter.Value);
 
 const size = round3(cashSize / strikePrice);
 let executions = {};
-let logStreamName = getLogStreamName();
+let logStreamName = await getLogStreamName();
 
 function round1(num) { return Math.round(num * 10) / 10; };
 function round3(num) { return Math.round(num * 1000) / 1000; };
 
-function getLogStreamName() {
+async function getLogStreamName() {
     const today = new Date();
     if (today.getUTCHours() < 8) today.setDate(today.getDate() - 1);
-    return `${symbol} ${today.getUTCFullYear()}-${(today.getUTCMonth() + 1)}-${today.getUTCDate()}`;
+    const streamName = `${symbol} ${today.getUTCFullYear()}-${(today.getUTCMonth() + 1)}-${today.getUTCDate()}`;
+    const streams = await CWClient.describeLogStreams({ logGroupName, logStreamNamePrefix: streamName }).promise();
+    if (!streams || !streams.logStreams || !streams.logStreams.length) {
+        await CWClient.createLogStream({ logGroupName, logStreamName: streamName }).promise();
+    }
+    else {
+        nextSequenceToken = streams.logStreams[0].uploadSequenceToken;
+    }
+    return streamName;
 }
 
 async function logError(error) {
@@ -46,14 +53,25 @@ async function logError(error) {
 
 async function logEvent(message) {
     console.log(message);
-    await CWClient.putLogEvents({
-        logGroupName,
-        logStreamName,
-        logEvents: [{
-            timestamp: (new Date()).getTime(),
-            message: message
-        }]
-    }).promise();
+    try {
+        ({ nextSequenceToken } = await CWClient.putLogEvents({
+            logGroupName,
+            logStreamName,
+            sequenceToken: nextSequenceToken,
+            logEvents: [{
+                timestamp: (new Date()).getTime(),
+                message: message
+            }]
+        }).promise());
+    }
+    catch (e) {
+        console.error(e);
+        const errorText = `${e}`;
+        const matches = errorText.match(/ERROR: InvalidSequenceTokenException: The given sequenceToken is invalid. The next expected sequenceToken is: ([0-9]*)/)
+        if (matches) {
+            nextSequenceToken = matches[1];
+        }
+    }
 }
 
 async function signedFetch(action, queryObj, method) {
@@ -233,11 +251,11 @@ async function shortFilled(message) {
     await logEvent(`${closeOrderId} placed close at ${price} lastPrice: ${lastPrice} sp:${stopPrice} shortOrderId:${orderId}`);
 
     const accountResponse = await signedFetch('account', null, 'GET');
-    while (!(await signedFetch('positionMargin', {
+    await signedFetch('positionMargin', {
         "symbol": symbol,
         "amount": accountResponse.availableBalance,
         "type": 1
-    }))) { };
+    });
     await logEvent(`${closeOrderId} repositioned margin with available balance ${accountResponse.availableBalance} shortOrderId:${orderId}`);
 }
 
@@ -314,15 +332,52 @@ async function initialize() {
 
 }
 
+
+// if !holdingPositon && (!negativeGradient || !belowMACD) continue;
+// if !holdingPosition && negativeGradient && belowMACD && (market < strike)
+//  take a short at market
+//  position margin
+//  try to place close at short position
+//  holdingPosition = true
+//  closeOrderPlaced = true
+
+// if holdingPosition && (market > shortPosition)
+//  close immediately at market
+//  closeOrderPlaced = false
+//  cancel pending orders
+//  holdingPosition = false
+// if holdingPosition && !closeOrderPlaced
+//  try to place close at shortPosition
+//  closeOrderPlaced = true
+
+
+// if pending close
+//  if negative gradient ignore
+//  if positive gradient
+//    if below strike 
+//      place a stop order at strike
+//      not pending close anymore
+//    if above or at strike
+//      immediately close at market
+//      place a short order at strike
+//      not pending close anymore
+
+// if pending short
+//  if positive gradient ignore
+//  if negative gradient
+//    if above strike
+//      place a short at strike
+//      no longer pending short
+//    if below strike
+//      immediately take a short position at market
+//      place a close order at the shorted position
+//      no longer pending short
+
 try {
     process.stdin.on('data', process.exit.bind(process, 0));
     await logEvent(`strike-price ${strikePrice} cash-size ${cashSize}`);
 
     while (true) {
-        settingsParameter = await ssm.getParameter({ Name: settingsParamName }).promise();
-        ({ symbol, tolerance, cashSize, strikePrice } = JSON.parse(settingsParameter.Parameter.Value));
-        logStreamName = getLogStreamName();
-
         var { listenKey } = await unsignedFetch('listenKey');
         if (!listenKey) process.exit();
 
@@ -338,16 +393,19 @@ try {
         executions['LIQUIDATION'] = placeStrike;
         await initialize();
 
-        const today = new Date();
-        const now = today.getTime();
-        today.setDate(today.getDate() + 1);
-        today.setUTCHours(8);
-        today.setMinutes(0);
-        today.setSeconds(0);
-        today.setMilliseconds(0);
-        const msDiff = (today.getTime() - now);
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        tomorrow.setUTCHours(8);
+        tomorrow.setMinutes(0);
+        tomorrow.setSeconds(0);
+        tomorrow.setMilliseconds(0);
+        const msDiff = (tomorrow.getTime() - (new Date()).getTime());
 
         await asyncSleep(msDiff);
+
+        settingsParameter = await ssm.getParameter({ Name: settingsParamName }).promise();
+        ({ symbol, tolerance, cashSize, strikePrice } = JSON.parse(settingsParameter.Parameter.Value));
+        logStreamName = await getLogStreamName();
     }
 
 } catch (ex) {
