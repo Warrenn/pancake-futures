@@ -333,18 +333,26 @@ async function initialize() {
 }
 
 
-// if !holdingPositon && (!negativeGradient || !belowMACD) continue;
-// if !holdingPosition && negativeGradient && belowMACD && (market < strike)
+// higer highs and lower lows
+// if !holdingPosition && negativeGradient && belowMACD && (market <= strike)
+//  cancelPending orders
+//  shortOrderPlaced = false
+//  closeOrderPlaced = false
 //  take a short at market
-//  position margin
-//  try to place close at short position
 //  holdingPosition = true
+//  shortPosition = market
+//  position margin
+//  try to place close at shortPosition
 //  closeOrderPlaced = true
+// if !holdingPosition && negativeGradient && belowMACD && (market > strike) && !shortOrderPlaced
+//  place stop for short position at strike
+//  shortOrderPlaced = true
 
 // if holdingPosition && (market > shortPosition)
 //  close immediately at market
-//  closeOrderPlaced = false
 //  cancel pending orders
+//  shortOrderPlaced = false
+//  closeOrderPlaced = false
 //  holdingPosition = false
 // if holdingPosition && !closeOrderPlaced
 //  try to place close at shortPosition
