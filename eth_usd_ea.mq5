@@ -14,9 +14,8 @@
 #include <Trade\SymbolInfo.mqh>
 
 input int      inp_streak_range     = 15000;
-input double   inp_strike_price     = 3500;
 input int      inp_ema_period       = 32;
-input double   inp_lots             = 1.78;
+input double   inp_cost             = 3000;
 input double   inp_threshold        = 0.0;
 input double   inp_take_profit      = 0.0;
 
@@ -123,10 +122,11 @@ void OnTick()
       m_positive_streak++;
      }
 
-   if(m_negative_streak > inp_streak_range && !holdingPosition && macd < 0 && m_tick.bid <= inp_strike_price)
+   if(m_negative_streak > inp_streak_range && !holdingPosition && macd < 0 )
      {
       m_upper = m_tick.ask;
-      if(!m_trade.Sell(inp_lots))
+      double volume = NormalizeDouble(inp_cost / m_tick.bid, _Digits);
+      if(!m_trade.Sell(volume))
         {
          printf("Error opening BUY position by %s : '%s'",Symbol(),m_trade.ResultComment());
          printf("Open parameters : price=%f,TP=%f",m_upper,0.0);
