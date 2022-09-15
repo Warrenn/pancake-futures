@@ -25,3 +25,5 @@ README.md
 *.ps1
 pancake-futures-application.zip
 *.txt
+*.mq5
+*.ex5

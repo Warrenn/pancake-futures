@@ -1,17 +1,18 @@
 {
-  "name": "pancake-futures",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "type": "module",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "dotenv": "^16.0.1",
-    "aws-sdk": "^2.1202.0",
-    "ws": "^8.8.1"
-  }
+    "name": "pancake-futures",
+    "version": "1.0.0",
+    "description": "",
+    "main": "meta-api.js",
+    "type": "module",
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+        "aws-sdk": "^2.1202.0",
+        "dotenv": "^16.0.1",
+        "metaapi.cloud-sdk": "^20.0.0",
+        "ws": "^8.8.1"
+    }
 }
