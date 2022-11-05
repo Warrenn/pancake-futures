@@ -1,0 +1,24 @@
+
+CIM short ::
+	expense -> (upperbound-underprice) + 50 + COM(next level)
+	income -> CIM level(current) price + POM level(current) price
+
+PIM short ::
+	expense ->  (upperbound-underprice) + COM price
+	income -> PIM price(current)
+
+CIM money ::
+	expense -> COM(level above) Price + POM(level below) price  + 50
+	income -> CIM price(current level)+PIM price(current level)
+
+PIM money ::
+	expense -> POM(level below) + 100 + COM(level above)
+	income -> CIM price(current level)+PIM price(current level)
+
+CIM coin ::
+	expense -> (underprice-lowerbound) + 100 + POM(level below)
+	income -> CIM price(current level) + PIM price(current level)
+
+PIM coin ::
+	expense -> 100 + POM(level below)
+	income -> CIM price(current level)+PIM price(current level)

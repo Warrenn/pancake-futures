@@ -1,0 +1,51 @@
+990591.2
+
+-get the marginaccount balance
+-check if we are borrowing Symbol
+-get orders
+
+-if not borrowing
+	-borrow on account
+
+-if not borrowing and aboveStrike and no pending sale
+	-place conditional sell at strike
+
+-if not borrowing and not aboveStrike
+	-clear pending orders
+	-emergency sell
+	
+-if borrowing and aboveStrike and not holding
+	-clear pending orders
+	-emergency buy
+	
+-if borrowing and aboveStrike and holding and no pending  sale
+	-place conditional sell at strike
+
+-if borrowing and not aboveStrike and holding
+	-clear pending orders
+	-emergency sell
+
+-if borrowing and not aboveStrike and not holding and no pending buy
+	-place conditional buy
+
+-on sell order fill complete
+	-if aboveThreshold
+		-emergency buy
+	-if not aboveThrshold
+		-wait a bit
+		-check threshold
+	-if aboveThreshold
+		-emergency buy
+	-if not aboveThreshold
+		-place a conditional buy
+
+-on buy order fill complete
+	-if not aboveThreshold
+		-emergency sell
+	-if aboveThreshold
+		-wait a bit
+		-check threshold
+	-if not aboveThreshold
+		-emergency sell
+	-if aboveThreshold
+		-place conditional sell
