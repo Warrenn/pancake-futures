@@ -1,10 +1,17 @@
-const { exit } = await import('node:process');
-const { WebSocket } = await import('ws');
-const { createHmac } = await import('node:crypto');
-const querystring = await import('node:querystring');
-await import('dotenv/config');
-const { setTimeout: asyncSleep } = await import('timers/promises');
-const AWS = await import('aws-sdk');
+const { exit } = await
+import ('node:process');
+const { WebSocket } = await
+import ('ws');
+const { createHmac } = await
+import ('node:crypto');
+const querystring = await
+import ('node:querystring');
+await
+import ('dotenv/config');
+const { setTimeout: asyncSleep } = await
+import ('timers/promises');
+const AWS = await
+import ('aws-sdk');
 
 const baseApiUrl = 'https://fapi.apollox.finance/fapi/v1';
 const baseWssUrl = 'wss://fstream.apollox.finance/ws';
@@ -29,8 +36,9 @@ const size = round3(cashSize / strikePrice);
 let executions = {};
 let logStreamName = await getLogStreamName();
 
-function round1(num) { return Math.round(num * 10) / 10; };
-function round3(num) { return Math.round(num * 1000) / 1000; };
+function round1(num) { return +(Math.round(num + 'e1') + 'e-1'); };
+
+function round3(num) { return +(Math.round(num + 'e3') + 'e-3'); };
 
 async function getLogStreamName() {
     const today = new Date();
@@ -39,8 +47,7 @@ async function getLogStreamName() {
     const streams = await CWClient.describeLogStreams({ logGroupName, logStreamNamePrefix: streamName }).promise();
     if (!streams || !streams.logStreams || !streams.logStreams.length) {
         await CWClient.createLogStream({ logGroupName, logStreamName: streamName }).promise();
-    }
-    else {
+    } else {
         nextSequenceToken = streams.logStreams[0].uploadSequenceToken;
     }
     return streamName;
@@ -63,8 +70,7 @@ async function logEvent(message) {
                 message: message
             }]
         }).promise());
-    }
-    catch (e) {
+    } catch (e) {
         console.error(e);
         const errorText = `${e}`;
         const matches = errorText.match(/ERROR: InvalidSequenceTokenException: The given sequenceToken is invalid. The next expected sequenceToken is: ([0-9]*)/)
@@ -132,7 +138,7 @@ function keygen(message) {
     return null;
 }
 
-const placeClose = async (o) => await signedFetch('order', {
+const placeClose = async(o) => await signedFetch('order', {
     "symbol": symbol,
     "side": "BUY",
     "type": "STOP_MARKET",
@@ -140,7 +146,7 @@ const placeClose = async (o) => await signedFetch('order', {
     "closePosition": true
 });
 
-const placeShort = async (o) => await signedFetch('order', {
+const placeShort = async(o) => await signedFetch('order', {
     "symbol": symbol,
     "side": "SELL",
     "type": "STOP_MARKET",
@@ -148,7 +154,7 @@ const placeShort = async (o) => await signedFetch('order', {
     "quantity": o.quantity
 });
 
-const placeMarketClose = async (o) => await signedFetch('order', {
+const placeMarketClose = async(o) => await signedFetch('order', {
     "symbol": symbol,
     "side": "BUY",
     "type": "MARKET",
@@ -157,7 +163,7 @@ const placeMarketClose = async (o) => await signedFetch('order', {
 });
 
 
-const placeMarketShort = async (o) => await signedFetch('order', {
+const placeMarketShort = async(o) => await signedFetch('order', {
     "symbol": symbol,
     "side": "SELL",
     "type": "MARKET",
@@ -393,10 +399,10 @@ try {
         socket.on('message', async data => await onMessage(data));
         await logEvent(`listening for events key:${listenKey}`);
 
-        var listenRef = setInterval(async () => {
+        var listenRef = setInterval(async() => {
             await logEvent('renewing key');
             await unsignedFetch('listenKey', 'PUT');
-        }, 3540000/*59 minutes: 59 minutes * 60 seconds * 1000 milliseconds*/);
+        }, 3540000 /*59 minutes: 59 minutes * 60 seconds * 1000 milliseconds*/ );
 
         executions['LIQUIDATION'] = placeStrike;
         await initialize();
