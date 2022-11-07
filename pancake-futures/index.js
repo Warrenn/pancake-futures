@@ -36,9 +36,9 @@ const size = round3(cashSize / strikePrice);
 let executions = {};
 let logStreamName = await getLogStreamName();
 
-function round1(num) { return +(Math.round(num + 'e1') + 'e-1'); };
+function round1(num) { return +(Math.round(num + 'e+1') + 'e-1'); };
 
-function round3(num) { return +(Math.round(num + 'e3') + 'e-3'); };
+function round3(num) { return +(Math.round(num + 'e+3') + 'e-3'); };
 
 async function getLogStreamName() {
     const today = new Date();
