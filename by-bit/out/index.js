@@ -2,13 +2,12 @@ var _a;
 import { setTimeout as asyncSleep } from 'timers/promises';
 import { SpotClientV3, WebsocketClient } from "bybit-api";
 import dotenv from "dotenv";
-import { exit } from "process";
 dotenv.config();
-const slippage = 0.003;
+const slippage = parseFloat(`${process.env.SLIPPAGE}`);
 const symbol = 'ETHUSDT';
 const coin = 'ETH';
-const strikePrice = 367.5;
-const quantity = 6;
+const strikePrice = parseFloat(`${process.env.STRIKEPRICE}`);
+const quantity = parseFloat(`${process.env.QUANTITY}`);
 const useTestnet = !!((_a = process.env.TESTNET) === null || _a === void 0 ? void 0 : _a.localeCompare("false", 'en', { sensitivity: 'accent' }));
 let inprocess = false;
 const strikeLower = strikePrice * (1 - slippage);
@@ -28,13 +27,18 @@ function round(num, precision = 2) {
     return +(Math.round(+(num + `e+${precision}`)) + `e-${precision}`);
 }
 async function conditionalSell(orderQty, triggerPrice) {
-    orderQty = round(orderQty, 5);
     triggerPrice = round(triggerPrice, 2);
+    orderQty = round((await getSellableAmount(coin, orderQty)), 5);
     while (true) {
         let positionPending = await hasPosition("SELL", orderQty, triggerPrice);
         if (positionPending) {
             console.log(`Sell position already pending qty:${orderQty} trigger:${triggerPrice}`);
             return;
+        }
+        let { result: { price } } = await client.getLastTradedPrice(symbol);
+        if (price < triggerPrice) {
+            console.error(`Sell error price ${price} is less than trigger ${triggerPrice}`);
+            continue;
         }
         let orderResponse = await client.submitOrder({
             orderType: "MARKET",
@@ -48,9 +52,11 @@ async function conditionalSell(orderQty, triggerPrice) {
         //TODO: figure out what to do if the order fails
         if (orderResponse.retCode == 0)
             return;
+        console.error(orderResponse.retMsg);
     }
 }
 async function immediateSell(orderQty) {
+    orderQty = round((await getSellableAmount(coin, orderQty)), 5);
     while (true) {
         let orderResponse = await client.submitOrder({
             orderType: "MARKET",
@@ -62,6 +68,7 @@ async function immediateSell(orderQty) {
         //TODO: figure out what to do if the order fails
         if (orderResponse.retCode == 0)
             return;
+        console.error(orderResponse.retMsg);
     }
 }
 async function immediateBuy(orderQty) {
@@ -76,6 +83,7 @@ async function immediateBuy(orderQty) {
         //TODO: figure out what to do if the order fails
         if (orderResponse.retCode == 0)
             return;
+        console.error(orderResponse.retMsg);
     }
 }
 async function hasPosition(side, qty, trigger) {
@@ -93,6 +101,11 @@ async function conditionalBuy(orderQty, triggerPrice) {
             console.log(`Buy position already pending qty:${orderQty} trigger:${triggerPrice}`);
             return;
         }
+        let { result: { price } } = await client.getLastTradedPrice(symbol);
+        if (price > triggerPrice) {
+            console.error(`Buy error price ${price} is greater than trigger ${triggerPrice}`);
+            continue;
+        }
         let orderResponse = await client.submitOrder({
             orderType: "MARKET",
             orderQty: `${orderQty}`,
@@ -105,7 +118,19 @@ async function conditionalBuy(orderQty, triggerPrice) {
         console.log(`conditional buy: ${JSON.stringify(orderResponse, null, 2)}`);
         if (orderResponse.retCode == 0)
             return;
+        console.error(orderResponse.retMsg);
     }
+}
+async function getSellableAmount(coin, quantity) {
+    let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
+    let position = loanAccountList.find(loanItem => loanItem.tokenId == coin) || { free: 0, loan: 0 };
+    return Math.min(quantity, position.free);
+}
+async function borrowFunds(coin, quantity) {
+    let borrowResponse = await client.borrowCrossMarginLoan(coin, `${quantity}`);
+    //TODO: need to consider this properly
+    if (borrowResponse.retCode != 0)
+        throw borrowResponse.retMsg;
 }
 async function InitializePosition() {
     if (inprocess)
@@ -117,41 +142,52 @@ async function InitializePosition() {
     let hasPendingSell = !!orders.find(order => order.side == "SELL" && order.orderQty == `${quantity}`);
     let hasPendingBuy = !!orders.find(order => order.side == "BUY" && order.orderQty == `${quantity}`);
     let borrowing = position.loan >= quantity;
-    let holding = position.free >= quantity || hasPendingSell;
+    let holding = position.free > quantity || hasPendingSell;
     let { result: { price } } = await client.getLastTradedPrice(symbol);
-    let aboveStrike = price > strikePrice;
-    let sellPrice = strikePrice;
-    if (price > strikeUpper)
-        sellPrice = strikeUpper;
-    let buyPrice = strikePrice;
-    if (price < strikeLower)
-        buyPrice = strikeLower;
-    console.log(`borrowing: ${borrowing} aboveStrike: ${aboveStrike} holding: ${holding} sell: ${hasPendingSell} buy: ${hasPendingBuy} sellPrice:${sellPrice} buyPrice:${buyPrice}`);
-    if (!borrowing) {
-        let borrowResponse = await client.borrowCrossMarginLoan(coin, `${quantity}`);
-        //TODO: need to consider this properly
-        if (borrowResponse.retCode != 0)
-            exit(-1);
+    let loggedMessage = false;
+    while (price > strikeLower && price < strikeUpper) {
+        if (!loggedMessage) {
+            console.log(`Price ${price} is between ${strikeLower} and ${strikeUpper}`);
+            loggedMessage = true;
+        }
+        await asyncSleep(1000);
+        let { result: { price: lastPrice } } = await client.getLastTradedPrice(symbol);
+        price = lastPrice;
     }
-    if (!borrowing && aboveStrike && !hasPendingSell)
-        await conditionalSell(quantity, sellPrice);
-    if (!borrowing && !aboveStrike)
+    let aboveStrike = price > strikeUpper;
+    console.log(`borrowing: ${borrowing} aboveStrike: ${aboveStrike} holding: ${holding} sell: ${hasPendingSell} buy: ${hasPendingBuy} `);
+    if (!borrowing) {
+        await borrowFunds(coin, quantity);
+        let runway = round(Math.max(quantity * price * 0.0015, 1), 2);
+        await immediateBuy(runway);
+        holding = true;
+    }
+    if (aboveStrike && !holding) {
+        await immediateBuy(quantity * price);
+    }
+    if (aboveStrike && !hasPendingSell) {
+        await conditionalSell(quantity, strikeUpper);
+    }
+    if (!aboveStrike && holding) {
         await immediateSell(quantity);
-    if (borrowing && aboveStrike && !holding)
-        await immediateBuy(quantity * buyPrice);
-    if (borrowing && aboveStrike && holding && !hasPendingSell)
-        await conditionalSell(quantity, sellPrice);
-    if (borrowing && !aboveStrike && holding && !hasPendingSell)
-        await immediateSell(quantity);
-    if (borrowing && !aboveStrike && !holding && !hasPendingBuy)
-        await conditionalBuy(quantity * buyPrice, buyPrice);
+    }
+    if (!aboveStrike && !hasPendingBuy) {
+        await conditionalBuy(quantity * strikePrice, strikeLower);
+    }
     inprocess = false;
 }
 try {
     process.stdin.on('data', process.exit.bind(process, 0));
     wsClient.on('update', data => {
         console.log(`update: ${JSON.stringify(data, null, 2)}`);
-        (async () => { await InitializePosition(); })();
+        (async () => {
+            try {
+                await InitializePosition();
+            }
+            catch (err) {
+                console.error(err);
+            }
+        })();
     });
     wsClient.subscribe(['ticketInfo', 'order'], true);
     await InitializePosition();

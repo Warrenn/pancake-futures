@@ -2,15 +2,14 @@ import { float, integer } from "aws-sdk/clients/lightsail";
 import { setTimeout as asyncSleep } from 'timers/promises';
 import { SpotClientV3, WebsocketClient } from "bybit-api";
 import dotenv from "dotenv";
-import { exit } from "process";
 
 dotenv.config();
 
-const slippage = 0.003;
+const slippage = parseFloat(`${process.env.SLIPPAGE}`);
 const symbol = 'ETHUSDT';
 const coin = 'ETH';
-const strikePrice = 367.5;
-const quantity = 6;
+const strikePrice = parseFloat(`${process.env.STRIKEPRICE}`);
+const quantity = parseFloat(`${process.env.QUANTITY}`);
 
 const useTestnet = !!(process.env.TESTNET?.localeCompare("false", 'en', { sensitivity: 'accent' }));
 
@@ -36,9 +35,8 @@ function round(num: number, precision: integer = 2) {
 }
 
 async function conditionalSell(orderQty: float, triggerPrice: float) {
-    orderQty = round(orderQty, 5);
     triggerPrice = round(triggerPrice, 2);
-    await ensureSellFunds(coin, orderQty);
+    orderQty = round((await getSellableAmount(coin, orderQty)), 5);
     while (true) {
         let positionPending = await hasPosition("SELL", orderQty, triggerPrice)
         if (positionPending) {
@@ -46,9 +44,10 @@ async function conditionalSell(orderQty: float, triggerPrice: float) {
             return;
         }
         let { result: { price } } = await client.getLastTradedPrice(symbol);
-        if (price > triggerPrice) {
-            console.error(`Sell error price ${price} is greater than trigger ${triggerPrice}`);
-            return;
+        if (price < triggerPrice) {
+            console.error(`Sell error price ${price} is less than trigger ${triggerPrice}`);
+            await asyncSleep(1000);
+            continue;
         }
         let orderResponse = await client.submitOrder({
             orderType: "MARKET",
@@ -66,7 +65,7 @@ async function conditionalSell(orderQty: float, triggerPrice: float) {
 }
 
 async function immediateSell(orderQty: float) {
-    await ensureSellFunds(coin, orderQty);
+    orderQty = round((await getSellableAmount(coin, orderQty)), 5);
     while (true) {
         let orderResponse = await client.submitOrder({
             orderType: "MARKET",
@@ -114,9 +113,10 @@ async function conditionalBuy(orderQty: float, triggerPrice: float) {
             return;
         }
         let { result: { price } } = await client.getLastTradedPrice(symbol);
-        if (price < triggerPrice) {
-            console.error(`Buy error price ${price} is less than trigger ${triggerPrice}`);
-            return;
+        if (price > triggerPrice) {
+            console.error(`Buy error price ${price} is greater than trigger ${triggerPrice}`);
+            await asyncSleep(1000);
+            continue;
         }
         let orderResponse = await client.submitOrder({
             orderType: "MARKET",
@@ -133,12 +133,10 @@ async function conditionalBuy(orderQty: float, triggerPrice: float) {
     }
 }
 
-async function ensureSellFunds(coin: string, quantity: number) {
+async function getSellableAmount(coin: string, quantity: number): Promise<number> {
     let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
     let position = (<any[]>loanAccountList).find(loanItem => loanItem.tokenId == coin) || { free: 0, loan: 0 };
-    if (position.free >= quantity) return;
-    let stillNeed = round(quantity - position.free, 5);
-    await borrowFunds(coin, stillNeed);
+    return Math.min(quantity, position.free);
 }
 
 async function borrowFunds(coin: string, quantity: number) {
@@ -158,7 +156,7 @@ async function InitializePosition() {
     let hasPendingBuy = !!(<any[]>orders).find(order => order.side == "BUY" && order.orderQty == `${quantity}`);
 
     let borrowing = position.loan >= quantity;
-    let holding = position.free > 0 || hasPendingSell;
+    let holding = position.free > quantity || hasPendingSell;
     let { result: { price } } = await client.getLastTradedPrice(symbol);
 
     let loggedMessage = false;
@@ -180,6 +178,8 @@ async function InitializePosition() {
 
     if (!borrowing) {
         await borrowFunds(coin, quantity);
+        let runway = round(Math.max(quantity * price * 0.0015, 1), 2);
+        await immediateBuy(runway);
         holding = true;
     }
 
@@ -207,7 +207,14 @@ try {
 
     wsClient.on('update', data => {
         console.log(`update: ${JSON.stringify(data, null, 2)}`);
-        (async () => { await InitializePosition(); })();
+        (async () => {
+            try {
+                await InitializePosition();
+            }
+            catch (err) {
+                console.error(err);
+            }
+        })();
     });
 
     wsClient.subscribe(['ticketInfo', 'order'], true);
