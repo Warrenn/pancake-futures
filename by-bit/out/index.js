@@ -15,13 +15,15 @@ const strikeUpper = strikePrice * (1 + slippage);
 const client = new SpotClientV3({
     testnet: useTestnet,
     key: process.env.API_KEY,
-    secret: process.env.API_SECRET
+    secret: process.env.API_SECRET,
+    recv_window: 999999
 });
 const wsClient = new WebsocketClient({
     testnet: useTestnet,
     key: process.env.API_KEY,
     secret: process.env.API_SECRET,
-    market: 'spotv3'
+    market: 'spotv3',
+    fetchTimeOffsetBeforeAuth: true
 });
 function round(num, precision = 2) {
     return +(Math.round(+(num + `e+${precision}`)) + `e-${precision}`);
@@ -38,6 +40,7 @@ async function conditionalSell(orderQty, triggerPrice) {
         let { result: { price } } = await client.getLastTradedPrice(symbol);
         if (price < triggerPrice) {
             console.error(`Sell error price ${price} is less than trigger ${triggerPrice}`);
+            await asyncSleep(1000);
             continue;
         }
         let orderResponse = await client.submitOrder({
@@ -71,11 +74,16 @@ async function immediateSell(orderQty) {
         console.error(orderResponse.retMsg);
     }
 }
+async function getBuyableAmount(coin, orderQty) {
+    let { result: { loanAbleAmount } } = await client.getCrossMarginInterestQuota(coin);
+    return Math.min(orderQty, +loanAbleAmount);
+}
 async function immediateBuy(orderQty) {
+    orderQty = round(await getBuyableAmount(coin, orderQty), 2);
     while (true) {
         let orderResponse = await client.submitOrder({
             orderType: "MARKET",
-            orderQty: `${round(orderQty, 2)}`,
+            orderQty: `${orderQty}`,
             side: "Buy",
             symbol: symbol
         });
@@ -93,7 +101,7 @@ async function hasPosition(side, qty, trigger) {
         order.triggerPrice == `${trigger}`);
 }
 async function conditionalBuy(orderQty, triggerPrice) {
-    orderQty = round(orderQty, 2);
+    orderQty = await getBuyableAmount(coin, orderQty);
     triggerPrice = round(triggerPrice, 2);
     while (true) {
         let positionPending = await hasPosition("BUY", orderQty, triggerPrice);
@@ -104,6 +112,7 @@ async function conditionalBuy(orderQty, triggerPrice) {
         let { result: { price } } = await client.getLastTradedPrice(symbol);
         if (price > triggerPrice) {
             console.error(`Buy error price ${price} is greater than trigger ${triggerPrice}`);
+            await asyncSleep(1000);
             continue;
         }
         let orderResponse = await client.submitOrder({
@@ -142,7 +151,7 @@ async function InitializePosition() {
     let hasPendingSell = !!orders.find(order => order.side == "SELL" && order.orderQty == `${quantity}`);
     let hasPendingBuy = !!orders.find(order => order.side == "BUY" && order.orderQty == `${quantity}`);
     let borrowing = position.loan >= quantity;
-    let holding = position.free > quantity || hasPendingSell;
+    let holding = position.free > 0 || hasPendingSell;
     let { result: { price } } = await client.getLastTradedPrice(symbol);
     let loggedMessage = false;
     while (price > strikeLower && price < strikeUpper) {
