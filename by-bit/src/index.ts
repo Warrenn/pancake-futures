@@ -90,13 +90,8 @@ async function immediateSell(coin: string, symbol: string, orderQty: float) {
     runInitialize = true;
 }
 
-async function getBuyableAmount(coin: string, orderQty: number): Promise<number> {
-    let { result: { loanAbleAmount } } = await client.getCrossMarginInterestQuota(coin);
-    return Math.min(orderQty, +loanAbleAmount);
-}
-
-async function immediateBuy(coin: string, symbol: string, orderQty: float) {
-    orderQty = round(await getBuyableAmount(coin, orderQty), 2);
+async function immediateBuy(symbol: string, orderQty: float) {
+    orderQty = round(orderQty, 2);
 
     let orderResponse = await client.submitOrder({
         orderType: "MARKET",
@@ -115,12 +110,12 @@ async function hasPosition(symbol: string, side: string, qty: number, trigger: n
     let { result: { list: orders } } = await client.getOpenOrders(symbol, undefined, undefined, 1);
     return !!(<any[]>orders).find(order =>
         order.side == side &&
-        order.orderQty == `${qty}` &&
+        +order.orderQty >= qty &&
         order.triggerPrice == `${trigger}`);
 }
 
-async function conditionalBuy(coin: string, symbol: string, orderQty: float, triggerPrice: float) {
-    orderQty = await getBuyableAmount(coin, orderQty);
+async function conditionalBuy(symbol: string, orderQty: float, triggerPrice: float) {
+    orderQty = round(orderQty, 5);
     triggerPrice = round(triggerPrice, 2);
 
     let positionPending = await hasPosition(symbol, "BUY", orderQty, triggerPrice);
@@ -152,7 +147,9 @@ async function conditionalBuy(coin: string, symbol: string, orderQty: float, tri
 }
 
 async function getSellableAmount(coin: string, quantity: number): Promise<number> {
-    let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
+    let response = await client.getCrossMarginAccountInfo();
+    if (response.retCode != 0) throw response.retMsg;
+    let { result: { loanAccountList } } = response;
     let position = (<any[]>loanAccountList).find(loanItem => loanItem.tokenId == coin) || { free: 0, loan: 0 };
     return Math.min(quantity, position.free);
 }
@@ -176,7 +173,6 @@ async function InitializePosition() {
 
     let borrowing = position.loan >= quantity;
     let holding = position.free >= quantity || hasPendingSell;
-    let haveFree = position.free > 0;
     let { result: { price } } = await client.getLastTradedPrice(symbol);
 
     let loggedMessage = false;
@@ -198,30 +194,24 @@ async function InitializePosition() {
     if (!borrowing) {
         await borrowFunds(coin, quantity);
         let runway = round(Math.max(quantity * price * interest, 1), 2);
-        await immediateBuy(coin, symbol, runway);
+        await immediateBuy(symbol, runway);
         holding = true;
     }
 
     if (aboveStrike && !holding) {
-        strikePrice = price;
-        ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
-        let buyAmount = quantity - position.free;
-        await immediateBuy(coin, symbol, buyAmount);
+        await immediateBuy(symbol, quantity);
     }
 
     if (aboveStrike && !hasPendingSell) {
         await conditionalSell(coin, symbol, quantity, strikeUpper);
     }
 
-    if (!aboveStrike && (holding || haveFree)) {
-        strikePrice = price;
-        ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
-        let sellAmount = Math.min(position.free, quantity);
-        await immediateSell(coin, symbol, sellAmount);
+    if (!aboveStrike && holding) {
+        await immediateSell(coin, symbol, quantity);
     }
 
     if (!aboveStrike && !hasPendingBuy) {
-        await conditionalBuy(coin, symbol, quantity * strikeLower, strikeLower);
+        await conditionalBuy(symbol, quantity * strikeLower, strikeLower);
     }
 
     inprocess = false;
@@ -231,19 +221,18 @@ try {
     process.stdin.on('data', process.exit.bind(process, 0));
 
     wsClient.on('update', message => {
-        console.log(`update: ${message?.type}`);
-        if (message?.type != 'snapshot') return;
-        if (!message?.data?.length) return;
+        console.log(`update: ${message?.topic}`);
+        runInitialize = true;
 
+        if (message?.topic != 'ticketInfo' || !message?.data?.length) return;
         console.log(`snapshot: ${JSON.stringify(message, null, 2)}`);
+
         const data = message.data[0];
         strikePrice = (data.S == "SELL") ? Math.min(+data.p, strikePrice) : Math.max(+data.p, strikePrice);
         ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
-
-        runInitialize = true;
     });
 
-    wsClient.subscribe(['ticketInfo'], true);
+    wsClient.subscribe(['ticketInfo', 'order', 'stopOrder'], true);
 
     while (true) {
         if (!runInitialize) {
