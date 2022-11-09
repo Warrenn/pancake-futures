@@ -5,7 +5,9 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const slippage = parseFloat(`${process.env.SLIPPAGE}`),
+const
+    interest = 0.0015,
+    slippage = parseFloat(`${process.env.SLIPPAGE}`),
     symbol = 'ETHUSDT',
     coin = 'ETH',
     quantity = parseFloat(`${process.env.QUANTITY}`),
@@ -169,11 +171,12 @@ async function InitializePosition() {
     let position = (<any[]>loanAccountList).find(loanItem => loanItem.tokenId == coin) || { free: 0, loan: 0 };
 
     let { result: { list: orders } } = await client.getOpenOrders(symbol, undefined, undefined, 1);
-    let hasPendingSell = !!(<any[]>orders).find(order => order.side == "SELL" && order.orderQty == `${quantity}`);
-    let hasPendingBuy = !!(<any[]>orders).find(order => order.side == "BUY" && order.orderQty == `${quantity}`);
+    let hasPendingSell = !!(<any[]>orders).find(order => order.side == "SELL" && +order.orderQty >= quantity);
+    let hasPendingBuy = !!(<any[]>orders).find(order => order.side == "BUY" && +order.orderQty >= quantity);
 
     let borrowing = position.loan >= quantity;
-    let holding = position.free > 0 || hasPendingSell;
+    let holding = position.free >= quantity || hasPendingSell;
+    let haveFree = position.free > 0;
     let { result: { price } } = await client.getLastTradedPrice(symbol);
 
     let loggedMessage = false;
@@ -194,7 +197,7 @@ async function InitializePosition() {
 
     if (!borrowing) {
         await borrowFunds(coin, quantity);
-        let runway = round(Math.max(quantity * price * 0.0015, 1), 2);
+        let runway = round(Math.max(quantity * price * interest, 1), 2);
         await immediateBuy(coin, symbol, runway);
         holding = true;
     }
@@ -202,17 +205,19 @@ async function InitializePosition() {
     if (aboveStrike && !holding) {
         strikePrice = price;
         ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
-        await immediateBuy(coin, symbol, quantity * price);
+        let buyAmount = quantity - position.free;
+        await immediateBuy(coin, symbol, buyAmount);
     }
 
     if (aboveStrike && !hasPendingSell) {
         await conditionalSell(coin, symbol, quantity, strikeUpper);
     }
 
-    if (!aboveStrike && holding) {
+    if (!aboveStrike && (holding || haveFree)) {
         strikePrice = price;
         ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
-        await immediateSell(coin, symbol, quantity);
+        let sellAmount = Math.min(position.free, quantity);
+        await immediateSell(coin, symbol, sellAmount);
     }
 
     if (!aboveStrike && !hasPendingBuy) {
