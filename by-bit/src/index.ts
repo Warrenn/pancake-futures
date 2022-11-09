@@ -5,17 +5,16 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const slippage = parseFloat(`${process.env.SLIPPAGE}`);
-const symbol = 'ETHUSDT';
-const coin = 'ETH';
-let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`);
-const quantity = parseFloat(`${process.env.QUANTITY}`);
+const slippage = parseFloat(`${process.env.SLIPPAGE}`),
+    symbol = 'ETHUSDT',
+    coin = 'ETH',
+    quantity = parseFloat(`${process.env.QUANTITY}`),
+    useTestnet = !!(process.env.TESTNET?.localeCompare("false", 'en', { sensitivity: 'accent' }));;
 
-const useTestnet = !!(process.env.TESTNET?.localeCompare("false", 'en', { sensitivity: 'accent' }));
-
-let inprocess = false;
-let runInitialize = true;
-let { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage);
+let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`),
+    inprocess = false,
+    runInitialize = true,
+    { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage);
 
 const client = new SpotClientV3({
     testnet: useTestnet,
