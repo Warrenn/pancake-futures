@@ -227,12 +227,15 @@ async function InitializePosition() {
     position.loan = round(position.loan, 5);
     let borrowing = position.loan >= quantity;
     let { result: { price } } = await client.getLastTradedPrice(symbol);
-    if (price > strikeUpper)
+    if (price > strikeUpper) {
         strikePrice = strikeUpper;
-    if (price < strikeLower)
+        ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
+    }
+    else if (price < strikeLower) {
         strikePrice = strikeLower;
-    let aboveStrike = price > strikePrice;
-    log(`borrowing: ${borrowing} aboveStrike: ${aboveStrike} holding: ${position.free} onloan: ${position.loan} price: ${price} lower: ${strikeLower} upper: ${strikeUpper} strike: ${strikePrice}`);
+        ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
+    }
+    log(`borrowing: ${borrowing} holding: ${position.free} onloan: ${position.loan} price: ${price} lower: ${strikeLower} upper: ${strikeUpper} strike: ${strikePrice}`);
     if (position.free > position.loan) {
         let adjustAmount = round(position.free - position.loan, 5);
         await immediateSell(symbol, adjustAmount);
@@ -247,11 +250,11 @@ async function InitializePosition() {
         position.free = round(position.free, 5);
         position.loan = round(position.loan, 5);
     }
-    if (aboveStrike && (position.free < quantity)) {
+    if ((price > strikeUpper) && (position.free < quantity)) {
         let buyAmount = round((quantity - position.free), 5);
         await immediateBuy(symbol, buyAmount);
     }
-    if (!aboveStrike && (position.free > 0)) {
+    if ((price < strikeLower) && (position.free > 0)) {
         await immediateSell(symbol, position.free);
     }
     inprocess = false;

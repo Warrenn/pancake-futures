@@ -309,12 +309,12 @@ async function InitializePosition() {
         position.loan = round(position.loan, 5);
     }
 
-    if ((price > strikeUpper) && (position.free < quantity)) {
+    if ((price > strikePrice) && (position.free < quantity)) {
         let buyAmount = round((quantity - position.free), 5);
         await immediateBuy(symbol, buyAmount);
     }
 
-    if ((price < strikeLower) && (position.free > 0)) {
+    if ((price < strikePrice) && (position.free > 0)) {
         await immediateSell(symbol, position.free);
     }
 
