@@ -8,8 +8,8 @@ dotenv.config();
 const interest = 0.0015, slippage = parseFloat(`${process.env.SLIPPAGE}`), symbol = 'ETHUSDT', baseCurrency = 'ETH', quoteCurrency = 'USDT', quantity = parseFloat(`${process.env.QUANTITY}`), useTestnet = !!((_a = process.env.TESTNET) === null || _a === void 0 ? void 0 : _a.localeCompare("false", 'en', { sensitivity: 'accent' })), minSizes = {
     ETH: 0.0005,
     USDT: 10
-};
-let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`), inprocess = false, runInitialize = true, { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage);
+}, coolDownLimit = 15;
+let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`), runInitialize = true, { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage), coolDown = 0;
 let client;
 function setStrikeBoundries(strikePrice, slippage) {
     let strikeLower = round(strikePrice * (1 - slippage), 2), strikeUpper = round(strikePrice * (1 + slippage), 2);
@@ -214,9 +214,8 @@ if completed order is buy place sell immediately at price of completed order
 
 */
 async function InitializePosition() {
-    if (inprocess)
-        return;
-    inprocess = true;
+    if (coolDown > 0)
+        coolDown--;
     await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Buy" });
     await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Sell" });
     await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 0, side: "Buy" });
@@ -229,11 +228,9 @@ async function InitializePosition() {
     let { result: { price } } = await client.getLastTradedPrice(symbol);
     if (price > strikeUpper) {
         strikePrice = strikeUpper;
-        ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
     }
-    else if (price < strikeLower) {
+    if (price < strikeLower) {
         strikePrice = strikeLower;
-        ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
     }
     log(`borrowing: ${borrowing} holding: ${position.free} onloan: ${position.loan} price: ${price} lower: ${strikeLower} upper: ${strikeUpper} strike: ${strikePrice}`);
     if (position.free > position.loan) {
@@ -250,14 +247,15 @@ async function InitializePosition() {
         position.free = round(position.free, 5);
         position.loan = round(position.loan, 5);
     }
-    if ((price > strikeUpper) && (position.free < quantity)) {
+    if ((price > strikePrice) && (position.free < quantity) && (coolDown == 0)) {
+        coolDown = coolDownLimit;
         let buyAmount = round((quantity - position.free), 5);
         await immediateBuy(symbol, buyAmount);
     }
-    if ((price < strikeLower) && (position.free > 0)) {
+    if ((price < strikePrice) && (position.free > 0) && (coolDown == 0)) {
+        coolDown = coolDownLimit;
         await immediateSell(symbol, position.free);
     }
-    inprocess = false;
 }
 process.stdin.on('data', process.exit.bind(process, 0));
 await writeFile('errors.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');

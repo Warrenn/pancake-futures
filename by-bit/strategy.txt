@@ -1,0 +1,61 @@
+/*
+
+check every 1s
+==============
+
+check the portfolio status
+get upper strike lower 
+get the market value
+get current order position
+
+short: 
+    loan value made but no holding amount
+long: 
+    no loan and no coin
+    loan value but have a holding amount
+
+if loan < orderSize:
+    take out a loan for difference
+    buy a little bit more for interest and overruns
+    add bit to holding
+    add difference to holding
+
+if holding < loanSize and above strike:
+    buy difference
+    add difference to holding
+    long position
+
+if holding > 0 and loanSize > 0  and below strike:
+    sell holding
+    holding is 0
+    short position
+
+if holding >= loanSize and aboveStrike:
+    long position
+
+if holding = 0 and loanSize > 0 and below strike:
+    short position
+
+if shorting the coin:
+
+    if market lower than strike but higher than lower
+    buy order is at strike if not make it so
+
+    if market lower than lower
+    buy order is at lower if not make it sow
+
+if longing the coin:
+
+    if market higher than upper
+    sell is at upper if not make it so
+
+    if market higher than strike but lower than upper
+    sell is at strike if not make it so
+
+for every filled order
+======================
+
+if completed order is sell place buy immediately at price of completed order
+if completed order is buy place sell immediately at price of completed order
+
+*/

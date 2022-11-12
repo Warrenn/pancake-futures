@@ -18,12 +18,13 @@ const
     minSizes: { [id: string]: number } = {
         ETH: 0.0005,
         USDT: 10
-    };
+    },
+    coolDownLimit = 15;
 
 let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`),
-    inprocess = false,
     runInitialize = true,
-    { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage);
+    { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage),
+    coolDown = 0;
 
 let client: SpotClientV3;
 
@@ -203,71 +204,8 @@ async function logError(message: string) {
     }
 }
 
-/*
-
-check every 1s
-==============
-
-check the portfolio status
-get upper strike lower 
-get the market value
-get current order position
-
-short: 
-    loan value made but no holding amount
-long: 
-    no loan and no coin
-    loan value but have a holding amount
-
-if loan < orderSize:
-    take out a loan for difference
-    buy a little bit more for interest and overruns
-    add bit to holding
-    add difference to holding
-
-if holding < loanSize and above strike:
-    buy difference
-    add difference to holding
-    long position
-
-if holding > 0 and loanSize > 0  and below strike:
-    sell holding
-    holding is 0
-    short position
-
-if holding >= loanSize and aboveStrike:
-    long position
-
-if holding = 0 and loanSize > 0 and below strike:
-    short position
-
-if shorting the coin:
-
-    if market lower than strike but higher than lower
-    buy order is at strike if not make it so
-
-    if market lower than lower
-    buy order is at lower if not make it sow
-
-if longing the coin:
-
-    if market higher than upper
-    sell is at upper if not make it so
-
-    if market higher than strike but lower than upper
-    sell is at strike if not make it so
-
-for every filled order
-======================
-
-if completed order is sell place buy immediately at price of completed order
-if completed order is buy place sell immediately at price of completed order
-
-*/
-
 async function InitializePosition() {
-    if (inprocess) return;
-    inprocess = true;
+    if (coolDown > 0) coolDown--;
 
     await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Buy" });
     await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Sell" });
@@ -285,12 +223,13 @@ async function InitializePosition() {
     if (price > strikeUpper) {
         strikePrice = strikeUpper;
         ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
-    } else if (price < strikeLower) {
+    }
+    if (price < strikeLower) {
         strikePrice = strikeLower;
         ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
     }
 
-    log(`borrowing: ${borrowing} holding: ${position.free} onloan: ${position.loan} price: ${price} lower: ${strikeLower} upper: ${strikeUpper} strike: ${strikePrice}`);
+    log(`borrowing: ${borrowing} holding: ${position.free} onloan: ${position.loan} price: ${price} lower: ${strikeLower} upper: ${strikeUpper} strike: ${strikePrice} cooldown ${coolDown}`);
 
     if (position.free > position.loan) {
         let adjustAmount = round(position.free - position.loan, 5);
@@ -309,16 +248,16 @@ async function InitializePosition() {
         position.loan = round(position.loan, 5);
     }
 
-    if ((price > strikePrice) && (position.free < quantity)) {
+    if ((price > strikePrice) && (position.free < quantity) && (coolDown == 0)) {
+        coolDown = coolDownLimit;
         let buyAmount = round((quantity - position.free), 5);
         await immediateBuy(symbol, buyAmount);
     }
 
-    if ((price < strikePrice) && (position.free > 0)) {
+    if ((price < strikePrice) && (position.free > 0) && (coolDown == 0)) {
+        coolDown = coolDownLimit;
         await immediateSell(symbol, position.free);
     }
-
-    inprocess = false;
 }
 
 process.stdin.on('data', process.exit.bind(process, 0));
