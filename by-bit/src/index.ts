@@ -285,8 +285,7 @@ async function InitializePosition() {
     if (price > strikeUpper) {
         strikePrice = strikeUpper;
         ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
-    }
-    if (price < strikeLower) {
+    } else if (price < strikeLower) {
         strikePrice = strikeLower;
         ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
     }
