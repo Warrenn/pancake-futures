@@ -1,7 +1,8 @@
 var _a;
 import { setTimeout as asyncSleep } from 'timers/promises';
 import { SpotClientV3, WebsocketClient } from "bybit-api";
-import { appendFile } from 'fs/promises';
+import { appendFile, writeFile } from 'fs/promises';
+import { appendFileSync } from 'fs';
 import dotenv from "dotenv";
 dotenv.config();
 const interest = 0.0015, slippage = parseFloat(`${process.env.SLIPPAGE}`), symbol = 'ETHUSDT', baseCurrency = 'ETH', quoteCurrency = 'USDT', quantity = parseFloat(`${process.env.QUANTITY}`), useTestnet = !!((_a = process.env.TESTNET) === null || _a === void 0 ? void 0 : _a.localeCompare("false", 'en', { sensitivity: 'accent' })), minSizes = {
@@ -29,7 +30,7 @@ async function cancelOrders(orderIds) {
     if (!errors)
         return;
     runInitialize = true;
-    log.error(`cancelOrders ${errors}`);
+    logError(`cancelOrders ${errors}`);
 }
 async function conditionalBuy(symbol, orderQty, triggerPrice, quoteCoin = quoteCurrency) {
     orderQty = round(orderQty, 5);
@@ -206,15 +207,16 @@ async function borrowFunds(coin, quantity) {
     runInitialize = true;
 }
 function log(message) {
-    console.log(Date.now.toString());
+    console.log((new Date()).toUTCString());
     console.log(message);
+    appendFileSync('logs.log', `${new Date()} ${message}\r\n`, 'utf-8');
 }
 async function consoleAndFile(message) {
     console.error(message);
-    await appendFile('logs.log', message, 'utf-8');
+    await appendFile('logs.log', message + '\r\n', 'utf-8');
 }
 async function logError(message) {
-    await consoleAndFile(Date.now.toString());
+    await consoleAndFile((new Date()).toUTCString());
     await consoleAndFile(message);
     var { result: { loanAccountList }, retCode, retMsg } = await client.getCrossMarginAccountInfo();
     if (retCode == 0) {
@@ -230,7 +232,7 @@ async function logError(message) {
     if (retCode == 0) {
         await consoleAndFile('Stop Orders:');
         for (let order of orders) {
-            await consoleAndFile(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} ap:${order.avgPrice} q:${order.orderQty} eq:${order.execQty} tp:${order.triggerPrice} sp:${order.stopPrice}`);
+            await consoleAndFile(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} q:${order.orderQty} tp:${order.triggerPrice}`);
         }
     }
     else {
@@ -240,7 +242,7 @@ async function logError(message) {
     if (retCode == 0) {
         await consoleAndFile('Non SP Orders:');
         for (let order of orders) {
-            await consoleAndFile(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} ap:${order.avgPrice} q:${order.orderQty} eq:${order.execQty} tp:${order.triggerPrice} sp:${order.stopPrice}`);
+            await consoleAndFile(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} ap:${order.avgPrice} q:${order.orderQty} eq:${order.execQty}`);
         }
     }
     else {
@@ -312,8 +314,14 @@ async function InitializePosition() {
     if (inprocess)
         return;
     inprocess = true;
+    let { result: { list: openOrders } } = await client.getOpenOrders(symbol, undefined, undefined, 0);
+    for (let openOrder of openOrders) {
+        await client.cancelOrder({ orderId: openOrder.orderId });
+    }
     let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
     let position = loanAccountList.find(loanItem => loanItem.tokenId == baseCurrency) || { free: 0, loan: 0 };
+    position.free = round(position.free, 5);
+    position.loan = round(position.loan, 5);
     let { result: { list: orders } } = await client.getOpenOrders(symbol, undefined, undefined, 1);
     if (orders && orders.length > 1) {
         await cancelOrders(orders.map(o => o.orderId));
@@ -364,6 +372,7 @@ async function InitializePosition() {
     inprocess = false;
 }
 process.stdin.on('data', process.exit.bind(process, 0));
+await writeFile('logs.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
 while (true) {
     try {
         client = new SpotClientV3({
@@ -383,7 +392,7 @@ while (true) {
             log(`update: ${message === null || message === void 0 ? void 0 : message.topic} `);
             runInitialize = true;
         });
-        wsClient.subscribe(['ticketInfo'], true);
+        wsClient.subscribe(['ticketInfo', 'order'], true);
         while (true) {
             if (!runInitialize) {
                 await asyncSleep(1000);
