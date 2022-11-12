@@ -2,7 +2,7 @@ var _a;
 import { setTimeout as asyncSleep } from 'timers/promises';
 import { SpotClientV3 } from "bybit-api";
 import { appendFile, writeFile } from 'fs/promises';
-import { appendFileSync } from 'fs';
+import { writeFileSync } from 'fs';
 import dotenv from "dotenv";
 dotenv.config();
 const interest = 0.0015, slippage = parseFloat(`${process.env.SLIPPAGE}`), symbol = 'ETHUSDT', baseCurrency = 'ETH', quoteCurrency = 'USDT', quantity = parseFloat(`${process.env.QUANTITY}`), useTestnet = !!((_a = process.env.TESTNET) === null || _a === void 0 ? void 0 : _a.localeCompare("false", 'en', { sensitivity: 'accent' })), minSizes = {
@@ -110,13 +110,13 @@ async function borrowFunds(coin, quantity) {
     runInitialize = true;
 }
 function log(message) {
-    console.log((new Date()).toISOString());
-    console.log(message);
-    appendFileSync('logs.log', `${(new Date()).toISOString()} ${message}\r\n`, 'utf-8');
+    let logLine = `${(new Date()).toISOString()} ${message}`;
+    console.log(logLine);
+    writeFileSync('logs.log', logLine, 'utf-8');
 }
 async function consoleAndFile(message) {
     console.error(message);
-    await appendFile('logs.log', message + '\r\n', 'utf-8');
+    await appendFile('errors.log', message + '\r\n', 'utf-8');
 }
 async function logError(message) {
     await consoleAndFile((new Date()).toISOString());
@@ -257,7 +257,7 @@ async function InitializePosition() {
     inprocess = false;
 }
 process.stdin.on('data', process.exit.bind(process, 0));
-await writeFile('logs.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
+await writeFile('errors.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
 while (true) {
     try {
         client = new SpotClientV3({
