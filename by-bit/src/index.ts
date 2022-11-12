@@ -1,6 +1,7 @@
 import { float, integer } from "aws-sdk/clients/lightsail";
 import { setTimeout as asyncSleep } from 'timers/promises';
 import { SpotClientV3, WebsocketClient } from "bybit-api";
+import { appendFile } from 'fs/promises';
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -46,7 +47,7 @@ async function cancelOrders(orderIds: string[]) {
 
     if (!errors) return;
     runInitialize = true;
-    log.error(`cancelOrders ${errors}`);
+    logError(`cancelOrders ${errors}`);
 }
 
 async function conditionalBuy(symbol: string, orderQty: float, triggerPrice: float, quoteCoin: string = quoteCurrency) {
@@ -252,23 +253,30 @@ function log(message: string) {
     console.log(message);
 }
 
-async function logError(message: string) {
-    console.error(Date.now.toString());
+async function consoleAndFile(message: string) {
     console.error(message);
+    await appendFile('logs.log', message, 'utf-8');
+}
+
+async function logError(message: string) {
+    await consoleAndFile(Date.now.toString());
+    await consoleAndFile(message);
 
     var { result: { loanAccountList }, retCode, retMsg } = await client.getCrossMarginAccountInfo();
     if (retCode == 0) {
-        console.error('Account Info:');
+        await consoleAndFile('Account Info:');
+
         for (let position of (<{ free: string, loan: string, tokenId: string, locked: string, total: string }[]>loanAccountList)) {
-            console.error(`Token ${position.tokenId} free: ${position.free} loan: ${position.loan} locked: ${position.locked} total: ${position.total}`);
+            await consoleAndFile(`Token ${position.tokenId} free: ${position.free} loan: ${position.loan} locked: ${position.locked} total: ${position.total}`);
         }
     } else {
-        console.error(`Account info failure ${retMsg}`)
+        await consoleAndFile(`Account info failure ${retMsg}`)
     }
 
     var { result: { list: orders }, retCode, retMsg } = await client.getOpenOrders(symbol, undefined, undefined, 1);
     if (retCode == 0) {
-        console.error('Stop Orders:');
+        await consoleAndFile('Stop Orders:');
+
         for (let order of (<{
             orderId: string,
             orderPrice: string,
@@ -280,15 +288,16 @@ async function logError(message: string) {
             stopPrice: string,
             triggerPrice: string
         }[]>orders)) {
-            console.error(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} ap:${order.avgPrice} q:${order.orderQty} eq:${order.execQty} tp:${order.triggerPrice} sp:${order.stopPrice}`);
+            await consoleAndFile(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} ap:${order.avgPrice} q:${order.orderQty} eq:${order.execQty} tp:${order.triggerPrice} sp:${order.stopPrice}`);
         }
     } else {
-        console.error(`Stop Orders failure ${retMsg}`)
+        await consoleAndFile(`Stop Orders failure ${retMsg}`)
     }
 
     var { result: { list: orders }, retCode, retMsg } = await client.getOpenOrders(symbol, undefined, undefined, 0);
     if (retCode == 0) {
-        console.error('Non SP Orders:');
+        await consoleAndFile('Non SP Orders:');
+
         for (let order of (<{
             orderId: string,
             orderPrice: string,
@@ -300,10 +309,10 @@ async function logError(message: string) {
             stopPrice: string,
             triggerPrice: string
         }[]>orders)) {
-            console.error(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} ap:${order.avgPrice} q:${order.orderQty} eq:${order.execQty} tp:${order.triggerPrice} sp:${order.stopPrice}`);
+            await consoleAndFile(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} ap:${order.avgPrice} q:${order.orderQty} eq:${order.execQty} tp:${order.triggerPrice} sp:${order.stopPrice}`);
         }
     } else {
-        console.error(`Non SP Orders failure ${retMsg}`)
+        await consoleAndFile(`Non SP Orders failure ${retMsg}`)
     }
 }
 
