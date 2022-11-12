@@ -10,7 +10,7 @@ const client = new SpotClientV3({
     testnet: useTestnet,
     key: process.env.API_KEY,
     secret: process.env.API_SECRET,
-    // recv_window: 999999
+    recv_window: 999999
 });
 const wsClient = new WebsocketClient({
     testnet: useTestnet,
@@ -20,46 +20,55 @@ const wsClient = new WebsocketClient({
     fetchTimeOffsetBeforeAuth: true
 });
 function setStrikeBoundries(strikePrice, slippage) {
-    let strikeLower = strikePrice * (1 - slippage), strikeUpper = strikePrice * (1 + slippage);
+    let strikeLower = round(strikePrice * (1 - slippage), 2), strikeUpper = round(strikePrice * (1 + slippage), 2);
     return { strikeLower, strikeUpper };
 }
 function round(num, precision = 2) {
     return +(Math.round(+(num + `e+${precision}`)) + `e-${precision}`);
 }
-async function cancelOrders() {
-    let response = await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"] });
-    if (response.retCode == 0)
+async function cancelOrders(orderIds) {
+    let errors = '';
+    for (let orderId of orderIds) {
+        let response = await client.cancelOrder({ orderId, orderCategory: 1 });
+        if (response.retCode == 0)
+            continue;
+        errors += `orderId: ${orderId} failed: ${response.retMsg}`;
+    }
+    if (!errors)
         return;
-    throw response.retMsg;
+    runInitialize = true;
+    log.error(`cancelOrders ${errors}`);
 }
 async function conditionalBuy(symbol, orderQty, triggerPrice, quoteCoin = quoteCurrency) {
     orderQty = round(orderQty, 5);
     triggerPrice = round(triggerPrice, 2);
     while (true) {
-        console.log(`conditional buy qty: ${orderQty} trigger ${triggerPrice} `);
+        console.log(`conditional buy qty: ${orderQty} trigger ${triggerPrice}`);
         let orderResponse = await client.submitOrder({
             orderType: "LIMIT",
-            orderQty: `${orderQty} `,
+            orderQty: `${orderQty}`,
             side: "Buy",
             symbol: symbol,
-            orderPrice: `${triggerPrice}`,
             triggerPrice: `${triggerPrice}`,
-            timeInForce: "FOK",
+            orderPrice: `${triggerPrice}`,
             orderCategory: 1
         });
         if (orderResponse.retCode == 12228) {
             console.error(orderResponse.retMsg);
-            await borrowIfRequired(quoteCoin, orderQty * triggerPrice);
+            await borrowIfRequired(quoteCoin, orderQty * triggerPrice, 2);
             continue;
         }
         if (orderResponse.retCode == 0) {
             let orderId = orderResponse.result.orderId;
             let { result: order, retCode, retMsg } = await client.getOrder({ orderId, orderCategory: 1 });
-            if (retCode != 0)
-                throw retMsg;
+            if (retCode != 0) {
+                log.error(`conditionalBuy ${retMsg}`);
+                runInitialize = true;
+                return;
+            }
             let { result: { price } } = await client.getLastTradedPrice(symbol);
             if (price > order.triggerPrice) {
-                console.error(`Buy error price ${price} is greater than trigger ${order.triggerPrice} `);
+                console.error(`Buy error price ${price} is greater than trigger ${order.triggerPrice}`);
                 await client.cancelOrder({ orderId });
                 runInitialize = true;
             }
@@ -96,8 +105,11 @@ async function conditionalSell(coin, symbol, orderQty, triggerPrice) {
         if (orderResponse.retCode == 0) {
             let orderId = orderResponse.result.orderId;
             let { result: order, retCode, retMsg } = await client.getOrder({ orderId, orderCategory: 1 });
-            if (retCode != 0)
-                throw retMsg;
+            if (retCode != 0) {
+                console.error(`conditionalSell ${retMsg}`);
+                runInitialize = true;
+                return;
+            }
             let { result: { price } } = await client.getLastTradedPrice(symbol);
             if (price < order.triggerPrice) {
                 console.error(`Sell error price ${price} is less than trigger ${order.triggerPrice} `);
@@ -114,10 +126,12 @@ async function conditionalSell(coin, symbol, orderQty, triggerPrice) {
 async function immediateSell(symbol, orderQty, coin = baseCurrency) {
     orderQty = round(orderQty, 5);
     while (true) {
-        console.log(`immediate sell qty: ${orderQty}`);
+        let { result: { price } } = await client.getLastTradedPrice(symbol);
+        console.log(`immediate sell qty: ${orderQty} at ${price}`);
         let orderResponse = await client.submitOrder({
-            orderType: "MARKET",
+            orderType: "LIMIT",
             orderQty: `${orderQty}`,
+            orderPrice: price,
             side: "Sell",
             symbol: symbol
         });
@@ -140,16 +154,18 @@ async function immediateSell(symbol, orderQty, coin = baseCurrency) {
 async function immediateBuy(symbol, orderQty, quoteCoin = quoteCurrency) {
     orderQty = round(orderQty, 5);
     while (true) {
-        console.log(`immediate buy qty: ${orderQty} `);
+        let { result: { price } } = await client.getLastTradedPrice(symbol);
+        console.log(`immediate buy qty: ${orderQty} at ${price}`);
         let orderResponse = await client.submitOrder({
-            orderType: "MARKET",
+            orderType: "LIMIT",
             orderQty: `${orderQty}`,
+            orderPrice: price,
             side: "Buy",
             symbol: symbol
         });
         if (orderResponse.retCode == 12228) {
             console.error(orderResponse.retMsg);
-            await borrowIfRequired(quoteCoin, orderQty);
+            await borrowIfRequired(quoteCoin, orderQty * price, 2);
             continue;
         }
         if (orderResponse.retCode == 0)
@@ -159,30 +175,44 @@ async function immediateBuy(symbol, orderQty, quoteCoin = quoteCurrency) {
         return;
     }
 }
-async function borrowIfRequired(coin, quantity) {
+async function borrowIfRequired(coin, quantity, precision = 2) {
     let response = await client.getCrossMarginAccountInfo();
-    if (response.retCode != 0)
-        throw response.retMsg;
+    if (response.retCode != 0) {
+        console.error(`borrowIfRequired ${response.retMsg}`);
+        runInitialize = true;
+        return;
+    }
     let { result: { loanAccountList } } = response;
     let position = loanAccountList.find(loanItem => loanItem.tokenId == coin) || { free: 0, loan: 0 };
+    console.log(`borrowIfRequired free:${position.free} quantity: ${quantity}`);
     if (position.free >= quantity)
         return;
-    let diff = quantity - position.free;
+    let diff = round(quantity - position.free, precision);
+    if (diff == 0)
+        return;
     await borrowFunds(coin, diff);
 }
 async function getSellableAmount(coin, quantity) {
     let response = await client.getCrossMarginAccountInfo();
-    if (response.retCode != 0)
-        throw response.retMsg;
+    if (response.retCode != 0) {
+        console.error(`getSellableAmount ${response.retMsg}`);
+        runInitialize = true;
+        return quantity;
+    }
     let { result: { loanAccountList } } = response;
     let position = loanAccountList.find(loanItem => loanItem.tokenId == coin) || { free: 0, loan: 0 };
     return Math.min(quantity, position.free);
 }
 async function borrowFunds(coin, quantity) {
-    let borrowResponse = await client.borrowCrossMarginLoan(coin, `${quantity} `);
+    if (coin == quoteCurrency && quantity < 10)
+        quantity = 10;
+    console.log(`borrow ${coin} ${quantity}`);
+    let borrowResponse = await client.borrowCrossMarginLoan(coin, `${quantity}`);
     //TODO: need to consider this properly
-    if (borrowResponse.retCode != 0)
-        throw borrowResponse.retMsg;
+    if (borrowResponse.retCode == 0)
+        return;
+    console.error(`borrowFunds ${borrowResponse.retMsg}`);
+    runInitialize = true;
 }
 /*
 
@@ -252,9 +282,13 @@ async function InitializePosition() {
     let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
     let position = loanAccountList.find(loanItem => loanItem.tokenId == baseCurrency) || { free: 0, loan: 0 };
     let { result: { list: orders } } = await client.getOpenOrders(symbol, undefined, undefined, 1);
+    if (orders && orders.length > 1) {
+        await cancelOrders(orders.map(o => o.orderId));
+        orders = [];
+    }
     let hasPendingSell = !!orders.find(order => order.side == "SELL");
     let hasPendingBuy = !!orders.find(order => order.side == "BUY");
-    let totalHoldings = orders.map(o => o.side == "SELL" ? +o.orderQty : 0).reduce((p, c) => p + c, 0) + +position.free;
+    let totalHoldings = orders.map(o => o.side == "SELL" ? round(o.orderQty, 5) : 0).reduce((p, c) => p + c, 0) + round(position.free, 5);
     let borrowing = position.loan >= quantity;
     let { result: { price } } = await client.getLastTradedPrice(symbol);
     let loggedMessage = false;
@@ -270,26 +304,22 @@ async function InitializePosition() {
     console.log(`borrowing: ${borrowing} aboveStrike: ${aboveStrike} holding: ${totalHoldings} sell: ${hasPendingSell} buy: ${hasPendingBuy} price: ${price} lower: ${strikeLower} upper: ${strikeUpper} `);
     if (!borrowing) {
         await borrowFunds(baseCurrency, quantity);
-        let runway = round(Math.max(quantity * interest, 1), 2);
+        let runway = round(Math.max(quantity * interest, 1) / price, 5);
         await immediateBuy(symbol, runway);
         totalHoldings += quantity;
     }
     if (aboveStrike && (totalHoldings < quantity)) {
-        let buyAmount = round(Math.max((quantity - totalHoldings) * price, 1), 2);
+        let buyAmount = round((quantity - totalHoldings), 5);
         await immediateBuy(symbol, buyAmount);
     }
     if (aboveStrike && !hasPendingSell) {
-        await cancelOrders();
-        await conditionalSell(baseCurrency, symbol, quantity, strikePrice);
+        await conditionalSell(baseCurrency, symbol, quantity, strikeUpper);
     }
     if (!aboveStrike && (totalHoldings > 0)) {
-        await cancelOrders();
         await immediateSell(symbol, totalHoldings);
-        hasPendingBuy = false;
     }
     if (!aboveStrike && !hasPendingBuy) {
-        await cancelOrders();
-        await conditionalBuy(symbol, quantity, strikePrice);
+        await conditionalBuy(symbol, quantity, strikeLower);
     }
     inprocess = false;
 }
@@ -304,7 +334,7 @@ try {
         // strikePrice = Math.min(+data.p, strikePrice);
         // ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
     });
-    wsClient.subscribe(['ticketInfo', 'order', 'stopOrder'], true);
+    wsClient.subscribe(['ticketInfo'], true);
     while (true) {
         if (!runInitialize) {
             await asyncSleep(1000);
