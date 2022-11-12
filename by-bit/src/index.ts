@@ -442,6 +442,8 @@ async function InitializePosition() {
     inprocess = false;
 }
 
+process.stdin.on('data', process.exit.bind(process, 0));
+
 while (true) {
     try {
         client = new SpotClientV3({
@@ -458,8 +460,6 @@ while (true) {
             market: 'spotv3',
             fetchTimeOffsetBeforeAuth: true
         });
-
-        process.stdin.on('data', process.exit.bind(process, 0));
 
         wsClient.on('update', message => {
             log(`update: ${message?.topic} `);
