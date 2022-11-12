@@ -273,11 +273,7 @@ while (true) {
         });
 
         while (true) {
-            if (!runInitialize) {
-                await asyncSleep(1000);
-                await InitializePosition();
-            }
-            runInitialize = false;
+            await asyncSleep(1000);
             await InitializePosition();
         }
     }
