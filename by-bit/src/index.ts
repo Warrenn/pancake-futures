@@ -4,7 +4,6 @@ import { SpotClientV3, WebsocketClient } from "bybit-api";
 import { appendFile, writeFile } from 'fs/promises';
 import { writeFileSync } from 'fs';
 import dotenv from "dotenv";
-import { Quantity } from "aws-sdk/clients/batch";
 
 dotenv.config();
 
@@ -23,10 +22,17 @@ const
 
 let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`),
     initializeImmediately = true,
-    setStrike = false,
+    retryTimeout = 5000,
     { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage);
 
-let client: SpotClientV3;
+let client: SpotClientV3,
+    wsClient: WebsocketClient = new WebsocketClient({
+        testnet: useTestnet,
+        key: process.env.API_KEY,
+        secret: process.env.API_SECRET,
+        market: 'spotv3',
+        fetchTimeOffsetBeforeAuth: true
+    });
 
 function round(num: number, precision: integer = 2) {
     return +(Math.round(+(num + `e+${precision}`)) + `e-${precision}`);
@@ -241,7 +247,9 @@ async function borrowFunds(coin: string, quantity: number) {
 
 function log(message: string) {
     let logLine = `${(new Date()).toISOString()} ${message}`;
-    console.log(logLine);
+    process.stdout.clearLine(0);
+    process.stdout.cursorTo(0);
+    process.stdout.write(logLine);
     writeFileSync('logs.log', logLine, 'utf-8');
 }
 
@@ -363,7 +371,7 @@ while (true) {
             recv_window: 999999
         });
 
-        const wsClient = new WebsocketClient({
+        wsClient = new WebsocketClient({
             testnet: useTestnet,
             key: process.env.API_KEY,
             secret: process.env.API_SECRET,
@@ -399,6 +407,14 @@ while (true) {
         }
     }
     catch (err) {
-        await logError(`${err}`);
+        try {
+            await logError(`${err}`);
+            wsClient?.closeAll(true);
+        } catch (lerr) {
+            console.error(lerr);
+        }
+        await asyncSleep(retryTimeout);
+        retryTimeout *= 2;
+        if (retryTimeout > 3600000) retryTimeout = 3600000;
     }
 }
