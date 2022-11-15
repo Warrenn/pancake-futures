@@ -9,8 +9,14 @@ const interest = 0.0015, slippage = parseFloat(`${process.env.SLIPPAGE}`), symbo
     ETH: 0.0005,
     USDT: 10
 };
-let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`), initializeImmediately = true, setStrike = false, { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage);
-let client;
+let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`), initializeImmediately = true, retryTimeout = 5000, { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage);
+let client, wsClient = new WebsocketClient({
+    testnet: useTestnet,
+    key: process.env.API_KEY,
+    secret: process.env.API_SECRET,
+    market: 'spotv3',
+    fetchTimeOffsetBeforeAuth: true
+});
 function round(num, precision = 2) {
     return +(Math.round(+(num + `e+${precision}`)) + `e-${precision}`);
 }
@@ -276,6 +282,10 @@ async function InitializePosition() {
         strikePrice = price;
         ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
     }
+    if (((price > strikePrice) && (position.free > 0) ||
+        (price < strikePrice && (position.free < quantity)))) {
+        initializeImmediately = false;
+    }
 }
 process.stdin.on('data', process.exit.bind(process, 0));
 await writeFile('errors.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
@@ -287,7 +297,7 @@ while (true) {
             secret: process.env.API_SECRET,
             recv_window: 999999
         });
-        const wsClient = new WebsocketClient({
+        wsClient = new WebsocketClient({
             testnet: useTestnet,
             key: process.env.API_KEY,
             secret: process.env.API_SECRET,
@@ -303,6 +313,7 @@ while (true) {
             const data = message.data[0];
             strikePrice = +data.p;
             ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
+            initializeImmediately = false;
         });
         wsClient.subscribe(['ticketInfo'], true);
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Buy" });
@@ -314,12 +325,22 @@ while (true) {
                 await InitializePosition();
                 continue;
             }
-            await asyncSleep(100);
+            await asyncSleep(3000);
             await InitializePosition();
         }
     }
     catch (err) {
-        await logError(`${err}`);
+        try {
+            await logError(`${err}`);
+            wsClient === null || wsClient === void 0 ? void 0 : wsClient.closeAll(true);
+        }
+        catch (lerr) {
+            console.error(lerr);
+        }
+        await asyncSleep(retryTimeout);
+        retryTimeout *= 2;
+        if (retryTimeout > 3600000)
+            retryTimeout = 3600000;
     }
 }
 //# sourceMappingURL=index.js.map

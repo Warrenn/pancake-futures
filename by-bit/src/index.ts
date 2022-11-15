@@ -247,9 +247,7 @@ async function borrowFunds(coin: string, quantity: number) {
 
 function log(message: string) {
     let logLine = `${(new Date()).toISOString()} ${message}`;
-    process.stdout.clearLine(0);
-    process.stdout.cursorTo(0);
-    process.stdout.write(logLine);
+    console.log(logLine);
     writeFileSync('logs.log', logLine, 'utf-8');
 }
 
@@ -357,6 +355,11 @@ async function InitializePosition() {
         strikePrice = price;
         ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
     }
+
+    if (((price > strikePrice) && (position.free > 0) ||
+        (price < strikePrice && (position.free < quantity)))) {
+            initializeImmediately = false;
+    }
 }
 
 process.stdin.on('data', process.exit.bind(process, 0));
@@ -388,6 +391,7 @@ while (true) {
             const data = message.data[0];
             strikePrice = +data.p;
             ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
+            initializeImmediately = false;
         });
 
         wsClient.subscribe(['ticketInfo'], true);
@@ -402,7 +406,7 @@ while (true) {
                 await InitializePosition();
                 continue;
             }
-            await asyncSleep(100);
+            await asyncSleep(3000);
             await InitializePosition();
         }
     }
