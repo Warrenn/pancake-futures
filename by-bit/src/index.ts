@@ -146,7 +146,7 @@ async function borrowIfRequired(coin: string, quantity: number, precision: numbe
     }
 
     let { result: { loanAccountList } } = response;
-    let position = (<any[]>loanAccountList).find(loanItem => loanItem.tokenId == coin) || { free: 0, loan: 0 };
+    let position = getPosition(loanAccountList, coin, precision);
     log(`borrowIfRequired free:${position.free} quantity: ${quantity}`)
     if (position.free >= quantity) return;
 
@@ -162,7 +162,7 @@ async function getSellableAmount(coin: string, quantity: number): Promise<number
         return quantity;
     }
     let { result: { loanAccountList } } = response;
-    let position = (<any[]>loanAccountList).find(loanItem => loanItem.tokenId == coin) || { free: 0, loan: 0 };
+    let position = getPosition(loanAccountList, coin, basePrecision);
     return Math.min(quantity, position.free);
 }
 
@@ -239,11 +239,9 @@ async function logError(message: string) {
     }
 }
 
-function calculateNetEquity(positions: Position[], price: float): number {
-    let quotePosition = positions.find(p => p.tokenId == quoteCurrency) || { free: 0, loan: 0 };
+function calculateNetEquity(basePosition: Position, quotePosition: Position, price: float): number {
     let qouteTotal = quotePosition.free - quotePosition.loan;
-    let basePosition = positions.find(p => p.tokenId == baseCurrency) || { free: 0, loan: 0 };
-    let baseTotal = (basePosition.free * price) - (quotePosition.loan * price);
+    let baseTotal = (basePosition.free - basePosition.loan) * price;
     return qouteTotal + baseTotal;
 }
 
@@ -307,7 +305,6 @@ async function placeClosingStraddle(settlementDate: Date, size: float) {
     });
     if (retCode != 0) {
         logError(`put order failed ${putSymbol} ${putSize} (${retCode}) failed ${retMsg}`);
-        return;
     }
 
     var { retCode, retMsg } = await optionsClient.submitOrder({
@@ -323,14 +320,21 @@ async function placeClosingStraddle(settlementDate: Date, size: float) {
     }
 }
 
+function getPosition(loanAccountList: Position[], tokenId: string, precision: number): Position {
+    let position = (<Position[]>loanAccountList).find(item => item.tokenId == tokenId) || { free: 0, loan: 0, tokenId };
+    position.free = floor(position.free, precision);
+    position.loan = floor(position.loan, precision);
+    return position;
+}
+
 async function executeTrade() {
     let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
-    let position = (<Position[]>loanAccountList).find(loanItem => loanItem.tokenId == baseCurrency) || { free: 0, loan: 0, tokenId: baseCurrency };
-    position.free = floor(position.free, basePrecision);
-    position.loan = floor(position.loan, basePrecision);
+    let position = getPosition(loanAccountList, baseCurrency, basePrecision);
+    let quotePosition = getPosition(loanAccountList, quoteCurrency, quotePrecision);
 
     let borrowing = position.loan >= quantity;
     let { result: { price } } = await client.getLastTradedPrice(symbol);
+    price = floor(price, quotePrecision);
 
     log(`holding:${position.free} onloan:${position.loan} price:${price} strike:${spotStrikePrice} trailingDirection:${trailingDirection} trailingPrice:${trailingPrice}`);
 
@@ -339,13 +343,12 @@ async function executeTrade() {
         await borrowFunds(baseCurrency, borrowAmount);
 
         ({ result: { loanAccountList } } = await client.getCrossMarginAccountInfo());
-        position = (<Position[]>loanAccountList).find(loanItem => loanItem.tokenId == baseCurrency) || { free: 0, loan: 0, tokenId: baseCurrency };
-        position.free = floor(position.free, basePrecision);
-        position.loan = floor(position.loan, basePrecision);
+        position = getPosition(loanAccountList, baseCurrency, basePrecision);
+        quotePosition = getPosition(loanAccountList, quoteCurrency, quotePrecision);
     }
 
     if (spotStrikePrice == 0) spotStrikePrice = price;
-    if (initialEquity == 0) initialEquity = calculateNetEquity(loanAccountList, price);
+    if (initialEquity == 0) initialEquity = calculateNetEquity(position, quotePosition, price);
     if (targetProfit == 0) targetProfit = spotStrikePrice * quantity * targetROI;
 
     if (trailingDirection == "Up") {
@@ -360,7 +363,7 @@ async function executeTrade() {
 
     if ((price < trailingPrice && trailingDirection == "Up") ||
         (price > trailingPrice && trailingDirection == "Down")) {
-        let netEquity = calculateNetEquity(loanAccountList, price);
+        let netEquity = calculateNetEquity(position, quotePosition, price);
         let profit = netEquity - initialEquity - targetProfit;
 
         log(`netEquity:${netEquity} initialEquity:${initialEquity} targetProfit:${targetProfit} profit:${profit}`);
@@ -391,6 +394,12 @@ async function executeTrade() {
 process.stdin.on('data', process.exit.bind(process, 0));
 await writeFile('errors.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
 
+spotStrikePrice = 0;
+initialEquity = 0;
+targetProfit = 0;
+tradingHalted = false;
+straddlePlaced = false;
+
 while (true) {
     try {
         client = new SpotClientV3({
@@ -413,22 +422,18 @@ while (true) {
         if (currentMoment.getUTCHours() < 8) extraDay = 0;
 
         let expiryTime = new Date();
-        expiryTime.setDate(expiryTime.getDate() + extraDay);
+        expiryTime.setUTCDate(expiryTime.getUTCDate() + extraDay);
         expiryTime.setUTCHours(8);
-        expiryTime.setMinutes(0);
-        expiryTime.setSeconds(0);
-        expiryTime.setMilliseconds(0);
+        expiryTime.setUTCMinutes(0);
+        expiryTime.setUTCSeconds(0);
+        expiryTime.setUTCMilliseconds(0);
 
         let straddleMoment = new Date();
-        straddleMoment.setDate(straddleMoment.getDate() + extraDay);
-        straddleMoment.setHours(straddleTimeConfig.hours);
-        straddleMoment.setMinutes(straddleTimeConfig.minutes);
-        straddleMoment.setSeconds(0);
-        straddleMoment.setMilliseconds(0);
-
-        spotStrikePrice = 0;
-        initialEquity = 0;
-        targetProfit = 0;
+        straddleMoment.setUTCDate(straddleMoment.getUTCDate() + extraDay);
+        straddleMoment.setUTCHours(straddleTimeConfig.hours);
+        straddleMoment.setUTCMinutes(straddleTimeConfig.minutes);
+        straddleMoment.setUTCSeconds(0);
+        straddleMoment.setUTCMilliseconds(0);
 
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Buy" });
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Sell" });
@@ -438,7 +443,15 @@ while (true) {
 
         while (true) {
             await asyncSleep(200);
-            if (currentMoment > expiryTime) break;
+            currentMoment = new Date();
+            if (currentMoment > expiryTime) {
+                spotStrikePrice = 0;
+                initialEquity = 0;
+                targetProfit = 0;
+                tradingHalted = false;
+                straddlePlaced = false;
+                break;
+            }
             if (currentMoment > straddleMoment && !straddlePlaced) {
                 await placeClosingStraddle(expiryTime, straddleSize);
                 straddlePlaced = true;
