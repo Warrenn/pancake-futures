@@ -1,106 +1,46 @@
 var _a;
 import { setTimeout as asyncSleep } from 'timers/promises';
-import { SpotClientV3, AccountAssetClient, USDCOptionClient } from "bybit-api";
+import { SpotClientV3, USDCOptionClient } from "bybit-api";
 import { appendFile, writeFile } from 'fs/promises';
 import { writeFileSync } from 'fs';
+import { v4 as uuid } from 'uuid';
 import dotenv from "dotenv";
 dotenv.config();
-const slippage = parseFloat(`${process.env.SLIPPAGE}`), margin = parseFloat(`${process.env.MARGIN}`), symbol = `${process.env.BASE}${process.env.QUOTE}`, baseCurrency = `${process.env.BASE}`, quoteCurrency = `${process.env.QUOTE}`, quantity = parseFloat(`${process.env.QUANTITY}`), quotePrecision = parseInt(`${process.env.QUOTEPRECISION}`), basePrecision = parseInt(`${process.env.BASEPRECISION}`), useTestnet = !!((_a = process.env.TESTNET) === null || _a === void 0 ? void 0 : _a.localeCompare("false", 'en', { sensitivity: 'accent' })), minSizes = {
+const slippage = parseFloat(`${process.env.SLIPPAGE}`), symbol = `${process.env.BASE}${process.env.QUOTE}`, baseCurrency = `${process.env.BASE}`, quoteCurrency = `${process.env.QUOTE}`, quantity = parseFloat(`${process.env.QUANTITY}`), quotePrecision = parseInt(`${process.env.QUOTEPRECISION}`), basePrecision = parseInt(`${process.env.BASEPRECISION}`), straddleSize = parseFloat(`${process.env.STRADDLESIZE}`), authKey = `${process.env.AUTHPARAMKEY}`, tradeDataKey = `${process.env.TRADEDATAKEY}`, trailingPerc = parseFloat(`${process.env.TRAILING}`), targetROI = parseFloat(`${process.env.TARGETROI}`), useTestnet = !!((_a = process.env.TESTNET) === null || _a === void 0 ? void 0 : _a.localeCompare("false", 'en', { sensitivity: 'accent' })), straddleTimeConfig = getStraddleTimeConfig(`${process.env.STRADDLETIME}`), minSizes = {
     ETH: 0.08,
     NEAR: 1,
-    USDT: 10
+    USDT: 10,
+    USDC: 10
 };
-let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`), retryTimeout = 5000, { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, margin);
+// authentication (fetched securely):
+//  apikey
+//  secret
+// daily change (fetched from a source):
+//  quantity
+//  option strike price
+// strategy change (can be provided and will remain constant for the lifetime of the run):
+//  slippage
+//  quoteCurrency
+//  openWithOptions
+//  closeWithOptions
+//  quoteprecision
+//  baseprecision
+//  baseCurrency
+//  trailingPerc
+let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`), currentMoment = new Date(), trailingDirection = "Up", trailingPrice = 0, newTrailing = 0, spotStrikePrice = 0, retryTimeout = 5000, initialEquity = 0, targetProfit = 0, tradingHalted = false, straddlePlaced = false;
 let client, assetClient, optionsClient;
-function round(num, precision = quotePrecision) {
+function floor(num, precision = quotePrecision) {
     let exp = Math.pow(10, precision);
     return Math.floor((+num * exp)) / exp;
 }
-function setStrikeBoundries(strikePrice, slippage) {
-    let strikeLower = strikePrice * (1 - slippage), strikeUpper = strikePrice * (1 + slippage);
-    return { strikeLower, strikeUpper };
-}
-async function conditionalBuy(symbol, orderQty, triggerPrice, quoteCoin = quoteCurrency) {
-    orderQty = round(orderQty, basePrecision);
-    triggerPrice = round(triggerPrice, quotePrecision);
-    while (true) {
-        log(`conditional buy qty: ${orderQty} trigger ${triggerPrice}`);
-        let orderResponse = await client.submitOrder({
-            orderType: "LIMIT",
-            orderQty: `${orderQty}`,
-            side: "Buy",
-            symbol: symbol,
-            triggerPrice: `${triggerPrice}`,
-            orderPrice: `${triggerPrice}`,
-            orderCategory: 1
-        });
-        if (orderResponse.retCode == 12228) {
-            await logError(orderResponse.retMsg);
-            await borrowIfRequired(quoteCoin, orderQty * triggerPrice, quotePrecision);
-            continue;
-        }
-        if (orderResponse.retCode == 0) {
-            let orderId = orderResponse.result.orderId;
-            let { result: order, retCode, retMsg } = await client.getOrder({ orderId, orderCategory: 1 });
-            if (retCode != 0) {
-                logError(`conditionalBuy ${retMsg}`);
-                return;
-            }
-            let { result: { price } } = await client.getLastTradedPrice(symbol);
-            if (price > order.triggerPrice) {
-                await logError(`Buy error price ${price} is greater than trigger ${order.triggerPrice}`);
-                await client.cancelOrder({ orderId });
-            }
-            return;
-        }
-        await logError(orderResponse.retMsg);
-        return;
-    }
-}
-async function conditionalSell(coin, symbol, orderQty, triggerPrice) {
-    orderQty = round(orderQty, basePrecision);
-    triggerPrice = round(triggerPrice, 2);
-    while (true) {
-        log(`conditional sell qty: ${orderQty} trigger ${triggerPrice} `);
-        let orderResponse = await client.submitOrder({
-            orderType: "LIMIT",
-            orderQty: `${orderQty}`,
-            side: "Sell",
-            symbol: symbol,
-            triggerPrice: `${triggerPrice}`,
-            orderPrice: `${triggerPrice}`,
-            orderCategory: 1
-        });
-        if (orderResponse.retCode == 12229) {
-            await logError(orderResponse.retMsg);
-            orderQty = await getSellableAmount(coin, orderQty);
-            orderQty = round(orderQty, basePrecision);
-            if (orderQty > 0)
-                continue;
-            return;
-        }
-        if (orderResponse.retCode == 0) {
-            let orderId = orderResponse.result.orderId;
-            let { result: order, retCode, retMsg } = await client.getOrder({ orderId, orderCategory: 1 });
-            if (retCode != 0) {
-                await logError(`conditionalSell ${retMsg}`);
-                return;
-            }
-            let { result: { price } } = await client.getLastTradedPrice(symbol);
-            if (price < order.triggerPrice) {
-                await logError(`Sell error price ${price} is less than trigger ${order.triggerPrice} `);
-                await client.cancelOrder({ orderId });
-            }
-            return;
-        }
-        await logError(orderResponse.retMsg);
-        return;
-    }
+function getStraddleTimeConfig(config) {
+    var parts = config.split(':');
+    return { hours: parseInt(parts[0]), minutes: parseInt(parts[1]) };
 }
 async function immediateSell(symbol, orderQty, price, coin = baseCurrency) {
-    orderQty = round(orderQty, basePrecision);
+    orderQty = floor(orderQty, basePrecision);
     while (true) {
-        price = round(price, quotePrecision);
+        price = floor(price, quotePrecision);
         log(`immediate sell qty: ${orderQty} at ${price}`);
         let orderResponse = await client.submitOrder({
             orderType: "LIMIT",
@@ -113,7 +53,7 @@ async function immediateSell(symbol, orderQty, price, coin = baseCurrency) {
         if (orderResponse.retCode == 12229) {
             await logError(orderResponse.retMsg);
             orderQty = await getSellableAmount(coin, orderQty);
-            orderQty = round(orderQty, basePrecision);
+            orderQty = floor(orderQty, basePrecision);
             ({ result: { price } } = await client.getLastTradedPrice(symbol));
             if (orderQty > 0)
                 continue;
@@ -126,9 +66,9 @@ async function immediateSell(symbol, orderQty, price, coin = baseCurrency) {
     }
 }
 async function immediateBuy(symbol, orderQty, price, quoteCoin = quoteCurrency) {
-    orderQty = round(orderQty, basePrecision);
+    orderQty = floor(orderQty, basePrecision);
     while (true) {
-        price = round(price, quotePrecision);
+        price = floor(price, quotePrecision);
         log(`immediate buy qty: ${orderQty} at ${price}`);
         let orderResponse = await client.submitOrder({
             orderType: "LIMIT",
@@ -161,7 +101,7 @@ async function borrowIfRequired(coin, quantity, precision = quotePrecision) {
     log(`borrowIfRequired free:${position.free} quantity: ${quantity}`);
     if (position.free >= quantity)
         return;
-    let diff = round(quantity - position.free, precision);
+    let diff = floor(quantity - position.free, precision);
     if (diff == 0)
         return;
     await borrowFunds(coin, diff);
@@ -228,34 +168,139 @@ async function logError(message) {
         await consoleAndFile(`Non SP Orders failure ${retMsg}`);
     }
 }
-async function InitializePosition() {
+function calculateNetEquity(positions, price) {
+    let quotePosition = positions.find(p => p.tokenId == quoteCurrency) || { free: 0, loan: 0 };
+    let qouteTotal = quotePosition.free - quotePosition.loan;
+    let basePosition = positions.find(p => p.tokenId == baseCurrency) || { free: 0, loan: 0 };
+    let baseTotal = (basePosition.free * price) - (quotePosition.loan * price);
+    return qouteTotal + baseTotal;
+}
+async function settleAccount(position, price) {
+    if (position.free < position.loan) {
+        let buyAmount = floor(position.loan - position.free, basePrecision);
+        ;
+        let buyPrice = floor(price * (1 + slippage), quotePrecision);
+        await immediateBuy(symbol, buyAmount, buyPrice);
+    }
+    if (position.free > position.loan) {
+        let sellAmount = floor(position.free - position.loan, basePrecision);
+        ;
+        let sellPrice = floor(price * (1 - slippage), quotePrecision);
+        await immediateSell(symbol, sellAmount, sellPrice);
+    }
+    await client.repayCrossMarginLoan(baseCurrency, `${position.loan}`);
+}
+async function placeClosingStraddle(settlementDate, size) {
+    const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    let { result: { price } } = await client.getLastTradedPrice(symbol);
+    let contractPrice = Math.floor(price / 25) * 25;
+    let lowerStrike = (price % 25) < 12.5 ? contractPrice - 25 : contractPrice;
+    let higherStrike = lowerStrike + 50;
+    let dateStr = `0${settlementDate.getUTCDate()}`;
+    dateStr = dateStr.substring(dateStr.length - 2);
+    let yearStr = `${settlementDate.getUTCFullYear()}`;
+    yearStr = yearStr.substring(yearStr.length - 2);
+    let putSymbol = `${baseCurrency}-${dateStr}${months[settlementDate.getUTCMonth()]}${yearStr}-${lowerStrike}-P`;
+    let callSymbol = `${baseCurrency}-${dateStr}${months[settlementDate.getUTCMonth()]}${yearStr}-${higherStrike}-C`;
+    var { result: putPosition, retCode, retMsg } = await optionsClient.getSymbolTicker(putSymbol);
+    if (retCode != 0) {
+        logError(`get option ${putSymbol} (${retCode}) failed ${retMsg}`);
+        return;
+    }
+    var { result: callPosition, retCode, retMsg } = await optionsClient.getSymbolTicker(callSymbol);
+    if (retCode != 0) {
+        logError(`get option ${callSymbol} (${retCode}) failed ${retMsg}`);
+        return;
+    }
+    let markTotal = +putPosition.markPrice + +callPosition.markPrice;
+    if (isNaN(markTotal)) {
+        logError(`invalid return values put: ${JSON.stringify(putPosition)} and call: ${JSON.stringify(callPosition)}!`);
+        return;
+    }
+    let putSize = floor(size * (+callPosition.markPrice / markTotal), 2);
+    let callSize = floor(size * (+putPosition.markPrice / markTotal), 2);
+    var { retCode, retMsg } = await optionsClient.submitOrder({
+        orderQty: `${putSize}`,
+        orderType: "Market",
+        side: "Buy",
+        symbol: putSymbol,
+        timeInForce: "ImmediateOrCancel",
+        orderLinkId: `${uuid()}`
+    });
+    if (retCode != 0) {
+        logError(`put order failed ${putSymbol} ${putSize} (${retCode}) failed ${retMsg}`);
+        return;
+    }
+    var { retCode, retMsg } = await optionsClient.submitOrder({
+        orderQty: `${size}`,
+        orderType: "Market",
+        side: "Buy",
+        symbol: callSymbol,
+        timeInForce: "ImmediateOrCancel",
+        orderLinkId: `${uuid()}`
+    });
+    if (retCode != 0) {
+        logError(`call order failed ${callSymbol} ${callSize} (${retCode}) failed ${retMsg}`);
+    }
+}
+async function executeTrade() {
     let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
-    let position = loanAccountList.find(loanItem => loanItem.tokenId == baseCurrency) || { free: 0, loan: 0 };
-    position.free = round(position.free, basePrecision);
-    position.loan = round(position.loan, basePrecision);
+    let position = loanAccountList.find(loanItem => loanItem.tokenId == baseCurrency) || { free: 0, loan: 0, tokenId: baseCurrency };
+    position.free = floor(position.free, basePrecision);
+    position.loan = floor(position.loan, basePrecision);
     let borrowing = position.loan >= quantity;
     let { result: { price } } = await client.getLastTradedPrice(symbol);
-    log(`holding:${position.free} onloan:${position.loan} price:${price} strike:${strikePrice} upper:${strikeUpper} lower:${strikeLower}`);
+    log(`holding:${position.free} onloan:${position.loan} price:${price} strike:${spotStrikePrice} trailingDirection:${trailingDirection} trailingPrice:${trailingPrice}`);
     if (!borrowing) {
-        let borrowAmount = round(quantity - position.loan, basePrecision);
+        let borrowAmount = floor(quantity - position.loan, basePrecision);
         await borrowFunds(baseCurrency, borrowAmount);
         ({ result: { loanAccountList } } = await client.getCrossMarginAccountInfo());
-        position = loanAccountList.find(loanItem => loanItem.tokenId == baseCurrency) || { free: 0, loan: 0 };
-        position.free = round(position.free, basePrecision);
-        position.loan = round(position.loan, basePrecision);
+        position = loanAccountList.find(loanItem => loanItem.tokenId == baseCurrency) || { free: 0, loan: 0, tokenId: baseCurrency };
+        position.free = floor(position.free, basePrecision);
+        position.loan = floor(position.loan, basePrecision);
+    }
+    if (spotStrikePrice == 0)
+        spotStrikePrice = price;
+    if (initialEquity == 0)
+        initialEquity = calculateNetEquity(loanAccountList, price);
+    if (targetProfit == 0)
+        targetProfit = spotStrikePrice * quantity * targetROI;
+    if (trailingDirection == "Up") {
+        newTrailing = floor((price * (1 - trailingPerc)), quotePrecision);
+        if (trailingPrice == 0)
+            trailingPrice = newTrailing;
+        trailingPrice = Math.max(trailingPrice, newTrailing);
+    }
+    else {
+        newTrailing = floor((price * (1 + trailingPerc)), quotePrecision);
+        if (trailingPrice == 0)
+            trailingPrice = newTrailing;
+        trailingPrice = Math.min(trailingPrice, newTrailing);
+    }
+    if ((price < trailingPrice && trailingDirection == "Up") ||
+        (price > trailingPrice && trailingDirection == "Down")) {
+        let netEquity = calculateNetEquity(loanAccountList, price);
+        let profit = netEquity - initialEquity - targetProfit;
+        log(`netEquity:${netEquity} initialEquity:${initialEquity} targetProfit:${targetProfit} profit:${profit}`);
+        if (profit > 0) {
+            await settleAccount(position, price);
+            tradingHalted = true;
+            return;
+        }
+        trailingPrice = newTrailing;
     }
     let longAmount = quantity - (position.free - position.loan);
-    if ((price > strikePrice) && (longAmount > 0)) {
-        let buyAmount = round(longAmount, basePrecision);
-        let buyPrice = round(price * (1 + slippage), quotePrecision);
+    if ((price > spotStrikePrice) && (longAmount > 0)) {
+        let buyAmount = floor(longAmount, basePrecision);
+        let buyPrice = floor(price * (1 + slippage), quotePrecision);
         await immediateBuy(symbol, buyAmount, buyPrice);
-        return;
+        trailingDirection = "Up";
     }
-    if ((price < strikePrice) && (position.free > 0)) {
-        let sellAmount = round(position.free, basePrecision);
-        let sellPrice = round(price * (1 - slippage), quotePrecision);
+    if ((price < spotStrikePrice) && (position.free > 0)) {
+        let sellAmount = floor(position.free, basePrecision);
+        let sellPrice = floor(price * (1 - slippage), quotePrecision);
         await immediateSell(symbol, sellAmount, sellPrice);
-        return;
+        trailingDirection = "Down";
     }
 }
 process.stdin.on('data', process.exit.bind(process, 0));
@@ -263,12 +308,6 @@ await writeFile('errors.log', `Starting session ${(new Date()).toUTCString()}\r\
 while (true) {
     try {
         client = new SpotClientV3({
-            testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
-            recv_window: 999999
-        });
-        assetClient = new AccountAssetClient({
             testnet: useTestnet,
             key: process.env.API_KEY,
             secret: process.env.API_SECRET,
@@ -293,16 +332,45 @@ while (true) {
         //         category: "OPTION",
         //         symbol: 'ETH-24NOV22-1150-P'
         //     });
-        let oo = await optionsClient.getSymbolTicker('ETH-24NOV22-1150-P');
-        process.exit(-1);
+        // expirytime is for today if the current time in UTC is earlier than 8 am otherwise its for tomorrow
+        currentMoment = new Date();
+        let extraDay = 1;
+        if (currentMoment.getUTCHours() < 8)
+            extraDay = 0;
+        let expiryTime = new Date();
+        expiryTime.setDate(expiryTime.getDate() + extraDay);
+        expiryTime.setUTCHours(8);
+        expiryTime.setMinutes(0);
+        expiryTime.setSeconds(0);
+        expiryTime.setMilliseconds(0);
+        let straddleMoment = new Date();
+        straddleMoment.setDate(straddleMoment.getDate() + extraDay);
+        straddleMoment.setHours(straddleTimeConfig.hours);
+        straddleMoment.setMinutes(straddleTimeConfig.minutes);
+        straddleMoment.setSeconds(0);
+        straddleMoment.setMilliseconds(0);
+        await placeClosingStraddle(expiryTime, 0.2);
+        break;
+        spotStrikePrice = 0;
+        initialEquity = 0;
+        targetProfit = 0;
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Buy" });
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Sell" });
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 0, side: "Buy" });
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 0, side: "Sell" });
         retryTimeout = 5000;
         while (true) {
-            //await asyncSleep(200);
-            await InitializePosition();
+            await asyncSleep(200);
+            if (currentMoment > expiryTime)
+                break;
+            if (currentMoment > straddleMoment && !straddlePlaced) {
+                await placeClosingStraddle(expiryTime, straddleSize);
+                straddlePlaced = true;
+                continue;
+            }
+            if (tradingHalted)
+                continue;
+            await executeTrade();
         }
     }
     catch (err) {

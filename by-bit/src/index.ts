@@ -261,30 +261,43 @@ async function settleAccount(position: Position, price: number) {
     await client.repayCrossMarginLoan(baseCurrency, `${position.loan}`);
 }
 
-async function placeClosingStraddle(size: float) {
+async function placeClosingStraddle(settlementDate: Date, size: float) {
     const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     let { result: { price } } = await client.getLastTradedPrice(symbol);
-    let today = new Date();
     let contractPrice = Math.floor(price / 25) * 25;
     let lowerStrike = (price % 25) < 12.5 ? contractPrice - 25 : contractPrice;
     let higherStrike = lowerStrike + 50;
 
-    let dateStr = `0${today.getUTCDate()}`;
+    let dateStr = `0${settlementDate.getUTCDate()}`;
     dateStr = dateStr.substring(dateStr.length - 2);
-    let yearStr = `${today.getUTCFullYear()}`;
+    let yearStr = `${settlementDate.getUTCFullYear()}`;
     yearStr = yearStr.substring(yearStr.length - 2);
 
-    let putSymbol = `${baseCurrency}-${dateStr}${months[today.getUTCMonth()]}${yearStr}-${lowerStrike}-P`;
-    let callSymbol = `${baseCurrency}-${dateStr}${months[today.getUTCMonth()]}${yearStr}-${higherStrike}-C`;
+    let putSymbol = `${baseCurrency}-${dateStr}${months[settlementDate.getUTCMonth()]}${yearStr}-${lowerStrike}-P`;
+    let callSymbol = `${baseCurrency}-${dateStr}${months[settlementDate.getUTCMonth()]}${yearStr}-${higherStrike}-C`;
 
-    let { result: putPosition } = await optionsClient.getSymbolTicker(putSymbol);
-    let { result: callPosition } = await optionsClient.getSymbolTicker(callSymbol);
+    var { result: putPosition, retCode, retMsg } = await optionsClient.getSymbolTicker(putSymbol);
+    if (retCode != 0) {
+        logError(`get option ${putSymbol} (${retCode}) failed ${retMsg}`);
+        return;
+    }
+
+    var { result: callPosition, retCode, retMsg } = await optionsClient.getSymbolTicker(callSymbol);
+    if (retCode != 0) {
+        logError(`get option ${callSymbol} (${retCode}) failed ${retMsg}`);
+        return;
+    }
 
     let markTotal = +putPosition.markPrice + +callPosition.markPrice;
-    let putSize = floor(size * (+callPosition.markPrice / markTotal), basePrecision);
-    let callSize = floor(size * (+putPosition.markPrice / markTotal), basePrecision);
+    if (isNaN(markTotal)) {
+        logError(`invalid return values put: ${JSON.stringify(putPosition)} and call: ${JSON.stringify(callPosition)}!`);
+        return;
+    }
 
-    let putOrder = await optionsClient.submitOrder({
+    let putSize = Math.max(floor(size * (+callPosition.markPrice / markTotal), 2), 0.1);
+    let callSize = Math.max(floor(size * (+putPosition.markPrice / markTotal), 2), 0.1);
+
+    var { retCode, retMsg } = await optionsClient.submitOrder({
         orderQty: `${putSize}`,
         orderType: "Market",
         side: "Buy",
@@ -292,15 +305,22 @@ async function placeClosingStraddle(size: float) {
         timeInForce: "ImmediateOrCancel",
         orderLinkId: `${uuid()}`
     });
+    if (retCode != 0) {
+        logError(`put order failed ${putSymbol} ${putSize} (${retCode}) failed ${retMsg}`);
+        return;
+    }
 
-    let callOrder = await optionsClient.submitOrder({
-        orderQty: `${callSize}`,
+    var { retCode, retMsg } = await optionsClient.submitOrder({
+        orderQty: `${size}`,
         orderType: "Market",
         side: "Buy",
         symbol: callSymbol,
         timeInForce: "ImmediateOrCancel",
         orderLinkId: `${uuid()}`
     });
+    if (retCode != 0) {
+        logError(`call order failed ${callSymbol} ${callSize} (${retCode}) failed ${retMsg}`);
+    }
 }
 
 async function executeTrade() {
@@ -380,36 +400,12 @@ while (true) {
             recv_window: 999999
         });
 
-        await placeClosingStraddle(0.2)
-
-        break;
-
-        // optionsClient = new USDCOptionClient({
-        //     testnet: useTestnet,
-        //     key: process.env.API_KEY,
-        //     secret: process.env.API_SECRET,
-        //     recv_window: 999999
-        // });
-
-        // let tid = `${uuid()}`;
-
-        // let transfres = await assetClient.createInternalTransfer({
-        //     amount: '1',
-        //     from_account_type: "SPOT",
-        //     to_account_type: "UNIFIED",
-        //     coin: "USDC",
-        //     transfer_id: tid
-        // });
-
-
-
-        // let oo = await optionsClient.getPositions(
-        //     {
-        //         category: "OPTION",
-        //         symbol: 'ETH-24NOV22-1150-P'
-        //     });
-
-        // expirytime is for today if the current time in UTC is earlier than 8 am otherwise its for tomorrow
+        optionsClient = new USDCOptionClient({
+            testnet: useTestnet,
+            key: process.env.API_KEY,
+            secret: process.env.API_SECRET,
+            recv_window: 999999
+        });
 
         currentMoment = new Date();
         let extraDay = 1;
@@ -444,7 +440,7 @@ while (true) {
             await asyncSleep(200);
             if (currentMoment > expiryTime) break;
             if (currentMoment > straddleMoment && !straddlePlaced) {
-                await placeClosingStraddle(straddleSize);
+                await placeClosingStraddle(expiryTime, straddleSize);
                 straddlePlaced = true;
                 continue;
             }
