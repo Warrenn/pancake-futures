@@ -1,32 +1,28 @@
 var _a;
 import { setTimeout as asyncSleep } from 'timers/promises';
-import { SpotClientV3, WebsocketClient } from "bybit-api";
+import { SpotClientV3, AccountAssetClient, USDCOptionClient } from "bybit-api";
 import { appendFile, writeFile } from 'fs/promises';
 import { writeFileSync } from 'fs';
 import dotenv from "dotenv";
 dotenv.config();
-const interest = 0.0015, slippage = parseFloat(`${process.env.SLIPPAGE}`), symbol = 'ETHUSDT', baseCurrency = 'ETH', quoteCurrency = 'USDT', quantity = parseFloat(`${process.env.QUANTITY}`), useTestnet = !!((_a = process.env.TESTNET) === null || _a === void 0 ? void 0 : _a.localeCompare("false", 'en', { sensitivity: 'accent' })), minSizes = {
-    ETH: 0.0005,
+const slippage = parseFloat(`${process.env.SLIPPAGE}`), margin = parseFloat(`${process.env.MARGIN}`), symbol = `${process.env.BASE}${process.env.QUOTE}`, baseCurrency = `${process.env.BASE}`, quoteCurrency = `${process.env.QUOTE}`, quantity = parseFloat(`${process.env.QUANTITY}`), quotePrecision = parseInt(`${process.env.QUOTEPRECISION}`), basePrecision = parseInt(`${process.env.BASEPRECISION}`), useTestnet = !!((_a = process.env.TESTNET) === null || _a === void 0 ? void 0 : _a.localeCompare("false", 'en', { sensitivity: 'accent' })), minSizes = {
+    ETH: 0.08,
+    NEAR: 1,
     USDT: 10
 };
-let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`), initializeImmediately = true, retryTimeout = 5000, { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage);
-let client, wsClient = new WebsocketClient({
-    testnet: useTestnet,
-    key: process.env.API_KEY,
-    secret: process.env.API_SECRET,
-    market: 'spotv3',
-    fetchTimeOffsetBeforeAuth: true
-});
-function round(num, precision = 2) {
-    return +(Math.round(+(num + `e+${precision}`)) + `e-${precision}`);
+let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`), retryTimeout = 5000, { strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, margin);
+let client, assetClient, optionsClient;
+function round(num, precision = quotePrecision) {
+    let exp = Math.pow(10, precision);
+    return Math.floor((+num * exp)) / exp;
 }
 function setStrikeBoundries(strikePrice, slippage) {
     let strikeLower = strikePrice * (1 - slippage), strikeUpper = strikePrice * (1 + slippage);
     return { strikeLower, strikeUpper };
 }
 async function conditionalBuy(symbol, orderQty, triggerPrice, quoteCoin = quoteCurrency) {
-    orderQty = round(orderQty, 5);
-    triggerPrice = round(triggerPrice, 2);
+    orderQty = round(orderQty, basePrecision);
+    triggerPrice = round(triggerPrice, quotePrecision);
     while (true) {
         log(`conditional buy qty: ${orderQty} trigger ${triggerPrice}`);
         let orderResponse = await client.submitOrder({
@@ -40,7 +36,7 @@ async function conditionalBuy(symbol, orderQty, triggerPrice, quoteCoin = quoteC
         });
         if (orderResponse.retCode == 12228) {
             await logError(orderResponse.retMsg);
-            await borrowIfRequired(quoteCoin, orderQty * triggerPrice, 2);
+            await borrowIfRequired(quoteCoin, orderQty * triggerPrice, quotePrecision);
             continue;
         }
         if (orderResponse.retCode == 0) {
@@ -48,24 +44,21 @@ async function conditionalBuy(symbol, orderQty, triggerPrice, quoteCoin = quoteC
             let { result: order, retCode, retMsg } = await client.getOrder({ orderId, orderCategory: 1 });
             if (retCode != 0) {
                 logError(`conditionalBuy ${retMsg}`);
-                initializeImmediately = true;
                 return;
             }
             let { result: { price } } = await client.getLastTradedPrice(symbol);
             if (price > order.triggerPrice) {
                 await logError(`Buy error price ${price} is greater than trigger ${order.triggerPrice}`);
                 await client.cancelOrder({ orderId });
-                initializeImmediately = true;
             }
             return;
         }
         await logError(orderResponse.retMsg);
-        initializeImmediately = true;
         return;
     }
 }
 async function conditionalSell(coin, symbol, orderQty, triggerPrice) {
-    orderQty = round(orderQty, 5);
+    orderQty = round(orderQty, basePrecision);
     triggerPrice = round(triggerPrice, 2);
     while (true) {
         log(`conditional sell qty: ${orderQty} trigger ${triggerPrice} `);
@@ -81,10 +74,9 @@ async function conditionalSell(coin, symbol, orderQty, triggerPrice) {
         if (orderResponse.retCode == 12229) {
             await logError(orderResponse.retMsg);
             orderQty = await getSellableAmount(coin, orderQty);
-            orderQty = round(orderQty, 5);
+            orderQty = round(orderQty, basePrecision);
             if (orderQty > 0)
                 continue;
-            initializeImmediately = true;
             return;
         }
         if (orderResponse.retCode == 0) {
@@ -92,28 +84,23 @@ async function conditionalSell(coin, symbol, orderQty, triggerPrice) {
             let { result: order, retCode, retMsg } = await client.getOrder({ orderId, orderCategory: 1 });
             if (retCode != 0) {
                 await logError(`conditionalSell ${retMsg}`);
-                initializeImmediately = true;
                 return;
             }
             let { result: { price } } = await client.getLastTradedPrice(symbol);
             if (price < order.triggerPrice) {
                 await logError(`Sell error price ${price} is less than trigger ${order.triggerPrice} `);
                 await client.cancelOrder({ orderId });
-                initializeImmediately = true;
             }
             return;
         }
         await logError(orderResponse.retMsg);
-        initializeImmediately = true;
         return;
     }
 }
-async function immediateSell(symbol, orderQty, coin = baseCurrency) {
-    orderQty = round(orderQty, 5);
-    initializeImmediately = true;
+async function immediateSell(symbol, orderQty, price, coin = baseCurrency) {
+    orderQty = round(orderQty, basePrecision);
     while (true) {
-        let { result: { price } } = await client.getLastTradedPrice(symbol);
-        price = round(price, 2);
+        price = round(price, quotePrecision);
         log(`immediate sell qty: ${orderQty} at ${price}`);
         let orderResponse = await client.submitOrder({
             orderType: "LIMIT",
@@ -121,12 +108,13 @@ async function immediateSell(symbol, orderQty, coin = baseCurrency) {
             orderPrice: `${price}`,
             side: "Sell",
             symbol: symbol,
-            timeInForce: "FOK"
+            timeInForce: "IOC"
         });
         if (orderResponse.retCode == 12229) {
             await logError(orderResponse.retMsg);
             orderQty = await getSellableAmount(coin, orderQty);
-            orderQty = round(orderQty, 5);
+            orderQty = round(orderQty, basePrecision);
+            ({ result: { price } } = await client.getLastTradedPrice(symbol));
             if (orderQty > 0)
                 continue;
             return;
@@ -137,13 +125,10 @@ async function immediateSell(symbol, orderQty, coin = baseCurrency) {
         return;
     }
 }
-async function immediateBuy(symbol, orderQty, quoteCoin = quoteCurrency) {
-    orderQty = round(orderQty, 5);
-    initializeImmediately = true;
-    ;
+async function immediateBuy(symbol, orderQty, price, quoteCoin = quoteCurrency) {
+    orderQty = round(orderQty, basePrecision);
     while (true) {
-        let { result: { price } } = await client.getLastTradedPrice(symbol);
-        price = round(price, 2);
+        price = round(price, quotePrecision);
         log(`immediate buy qty: ${orderQty} at ${price}`);
         let orderResponse = await client.submitOrder({
             orderType: "LIMIT",
@@ -151,11 +136,12 @@ async function immediateBuy(symbol, orderQty, quoteCoin = quoteCurrency) {
             orderPrice: `${price}`,
             side: "Buy",
             symbol: symbol,
-            timeInForce: "FOK"
+            timeInForce: "IOC"
         });
         if (orderResponse.retCode == 12228) {
             await logError(orderResponse.retMsg);
-            await borrowIfRequired(quoteCoin, orderQty * price, 2);
+            await borrowIfRequired(quoteCoin, orderQty * price, quotePrecision);
+            ({ result: { price } } = await client.getLastTradedPrice(symbol));
             continue;
         }
         if (orderResponse.retCode == 0)
@@ -164,11 +150,10 @@ async function immediateBuy(symbol, orderQty, quoteCoin = quoteCurrency) {
         return;
     }
 }
-async function borrowIfRequired(coin, quantity, precision = 2) {
+async function borrowIfRequired(coin, quantity, precision = quotePrecision) {
     let response = await client.getCrossMarginAccountInfo();
     if (response.retCode != 0) {
         await logError(`borrowIfRequired ${response.retMsg}`);
-        initializeImmediately = true;
         return;
     }
     let { result: { loanAccountList } } = response;
@@ -185,7 +170,6 @@ async function getSellableAmount(coin, quantity) {
     let response = await client.getCrossMarginAccountInfo();
     if (response.retCode != 0) {
         await logError(`getSellableAmount ${response.retMsg}`);
-        initializeImmediately = true;
         return quantity;
     }
     let { result: { loanAccountList } } = response;
@@ -200,7 +184,6 @@ async function borrowFunds(coin, quantity) {
     if (borrowResponse.retCode == 0)
         return;
     await logError(`borrowFunds ${borrowResponse.retMsg}`);
-    initializeImmediately = true;
 }
 function log(message) {
     let logLine = `${(new Date()).toISOString()} ${message}`;
@@ -248,43 +231,31 @@ async function logError(message) {
 async function InitializePosition() {
     let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
     let position = loanAccountList.find(loanItem => loanItem.tokenId == baseCurrency) || { free: 0, loan: 0 };
-    position.free = round(position.free, 5);
-    position.loan = round(position.loan, 5);
+    position.free = round(position.free, basePrecision);
+    position.loan = round(position.loan, basePrecision);
     let borrowing = position.loan >= quantity;
     let { result: { price } } = await client.getLastTradedPrice(symbol);
-    log(`borrowing: ${borrowing} holding: ${position.free} onloan: ${position.loan} price: ${price} strike: ${strikePrice} upper: ${strikeUpper} lower: ${strikeLower}`);
-    if (position.free > position.loan) {
-        let adjustAmount = round(position.free - position.loan, 5);
-        await immediateSell(symbol, adjustAmount);
-    }
+    log(`holding:${position.free} onloan:${position.loan} price:${price} strike:${strikePrice} upper:${strikeUpper} lower:${strikeLower}`);
     if (!borrowing) {
-        let borrowAmount = round(quantity - position.loan, 5);
+        let borrowAmount = round(quantity - position.loan, basePrecision);
         await borrowFunds(baseCurrency, borrowAmount);
-        let runway = round(Math.max(quantity * interest, 1) / price, 5);
-        await immediateBuy(symbol, runway);
         ({ result: { loanAccountList } } = await client.getCrossMarginAccountInfo());
         position = loanAccountList.find(loanItem => loanItem.tokenId == baseCurrency) || { free: 0, loan: 0 };
-        position.free = round(position.free, 5);
-        position.loan = round(position.loan, 5);
+        position.free = round(position.free, basePrecision);
+        position.loan = round(position.loan, basePrecision);
     }
-    if ((price > strikeUpper) && (position.free < quantity)) {
-        let buyAmount = round((quantity - position.free), 5);
-        await immediateBuy(symbol, buyAmount);
+    let longAmount = quantity - (position.free - position.loan);
+    if ((price > strikePrice) && (longAmount > 0)) {
+        let buyAmount = round(longAmount, basePrecision);
+        let buyPrice = round(price * (1 + slippage), quotePrecision);
+        await immediateBuy(symbol, buyAmount, buyPrice);
+        return;
     }
-    if ((price < strikeLower) && (position.free > 0)) {
-        await immediateSell(symbol, position.free);
-    }
-    if ((price > strikeUpper) && (position.free > 0)) {
-        strikePrice = price;
-        ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
-    }
-    if ((price < strikeLower) && (position.free < quantity)) {
-        strikePrice = price;
-        ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
-    }
-    if (((price > strikePrice) && (position.free > 0) ||
-        (price < strikePrice && (position.free < quantity)))) {
-        initializeImmediately = false;
+    if ((price < strikePrice) && (position.free > 0)) {
+        let sellAmount = round(position.free, basePrecision);
+        let sellPrice = round(price * (1 - slippage), quotePrecision);
+        await immediateSell(symbol, sellAmount, sellPrice);
+        return;
     }
 }
 process.stdin.on('data', process.exit.bind(process, 0));
@@ -297,42 +268,46 @@ while (true) {
             secret: process.env.API_SECRET,
             recv_window: 999999
         });
-        wsClient = new WebsocketClient({
+        assetClient = new AccountAssetClient({
             testnet: useTestnet,
             key: process.env.API_KEY,
             secret: process.env.API_SECRET,
-            market: 'spotv3',
-            fetchTimeOffsetBeforeAuth: true
+            recv_window: 999999
         });
-        wsClient.on('update', message => {
-            var _a;
-            console.log(`update: ${message === null || message === void 0 ? void 0 : message.topic}`);
-            if ((message === null || message === void 0 ? void 0 : message.topic) != 'ticketInfo' || !((_a = message === null || message === void 0 ? void 0 : message.data) === null || _a === void 0 ? void 0 : _a.length))
-                return;
-            console.log(`snapshot: ${JSON.stringify(message, null, 2)}`);
-            const data = message.data[0];
-            strikePrice = +data.p;
-            ({ strikeLower, strikeUpper } = setStrikeBoundries(strikePrice, slippage));
-            initializeImmediately = false;
+        optionsClient = new USDCOptionClient({
+            testnet: useTestnet,
+            key: process.env.API_KEY,
+            secret: process.env.API_SECRET,
+            recv_window: 999999
         });
-        wsClient.subscribe(['ticketInfo'], true);
+        // let tid = `${uuid()}`;
+        // let transfres = await assetClient.createInternalTransfer({
+        //     amount: '1',
+        //     from_account_type: "SPOT",
+        //     to_account_type: "UNIFIED",
+        //     coin: "USDC",
+        //     transfer_id: tid
+        // });
+        // let oo = await optionsClient.getPositions(
+        //     {
+        //         category: "OPTION",
+        //         symbol: 'ETH-24NOV22-1150-P'
+        //     });
+        let oo = await optionsClient.getSymbolTicker('ETH-24NOV22-1150-P');
+        process.exit(-1);
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Buy" });
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 1, side: "Sell" });
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 0, side: "Buy" });
         await client.cancelOrderBatch({ symbol, orderTypes: ["LIMIT", "MARKET"], orderCategory: 0, side: "Sell" });
+        retryTimeout = 5000;
         while (true) {
-            if (initializeImmediately) {
-                await InitializePosition();
-                continue;
-            }
-            await asyncSleep(3000);
+            //await asyncSleep(200);
             await InitializePosition();
         }
     }
     catch (err) {
         try {
             await logError(`${err}`);
-            wsClient === null || wsClient === void 0 ? void 0 : wsClient.closeAll(true);
         }
         catch (lerr) {
             console.error(lerr);
