@@ -51,8 +51,7 @@ const
 //  baseCurrency
 //  trailingPerc
 
-let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`),
-    currentMoment: Date = new Date(),
+let currentMoment: Date = new Date(),
     trailingDirection: TrailingDirection = "Up",
     trailingPrice: number = 0,
     newTrailing: number = 0,
@@ -189,54 +188,6 @@ async function consoleAndFile(message: string) {
 async function logError(message: string) {
     await consoleAndFile((new Date()).toISOString());
     await consoleAndFile(message);
-
-    var { result: { loanAccountList }, retCode, retMsg } = await client.getCrossMarginAccountInfo();
-    if (retCode == 0) {
-        await consoleAndFile('Account Info:');
-
-        for (let position of (<{ free: string, loan: string, tokenId: string, locked: string, total: string }[]>loanAccountList)) {
-            await consoleAndFile(`Token ${position.tokenId} free: ${position.free} loan: ${position.loan} locked: ${position.locked} total: ${position.total}`);
-        }
-    } else {
-        await consoleAndFile(`Account info failure ${retMsg}`)
-    }
-
-    var { result: { list: orders }, retCode, retMsg } = await client.getOpenOrders(symbol, undefined, undefined, 1);
-    if (retCode == 0) {
-        await consoleAndFile('Stop Orders:');
-
-        for (let order of (<{
-            orderId: string,
-            orderPrice: string,
-            orderQty: string,
-            status: string,
-            side: string,
-            triggerPrice: string
-        }[]>orders)) {
-            await consoleAndFile(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} q:${order.orderQty} tp:${order.triggerPrice}`);
-        }
-    } else {
-        await consoleAndFile(`Stop Orders failure ${retMsg}`)
-    }
-
-    var { result: { list: orders }, retCode, retMsg } = await client.getOpenOrders(symbol, undefined, undefined, 0);
-    if (retCode == 0) {
-        await consoleAndFile('Non SP Orders:');
-
-        for (let order of (<{
-            orderId: string,
-            orderPrice: string,
-            orderQty: string,
-            execQty: string,
-            avgPrice: string,
-            status: string,
-            side: string
-        }[]>orders)) {
-            await consoleAndFile(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} ap:${order.avgPrice} q:${order.orderQty} eq:${order.execQty}`);
-        }
-    } else {
-        await consoleAndFile(`Non SP Orders failure ${retMsg}`)
-    }
 }
 
 function calculateNetEquity(basePosition: Position, quotePosition: Position, price: float): number {

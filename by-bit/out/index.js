@@ -27,7 +27,7 @@ const slippage = parseFloat(`${process.env.SLIPPAGE}`), symbol = `${process.env.
 //  baseprecision
 //  baseCurrency
 //  trailingPerc
-let strikePrice = parseFloat(`${process.env.STRIKEPRICE}`), currentMoment = new Date(), trailingDirection = "Up", trailingPrice = 0, newTrailing = 0, spotStrikePrice = 0, retryTimeout = 5000, initialEquity = 0, targetProfit = 0, tradingHalted = false, straddlePlaced = false;
+let currentMoment = new Date(), trailingDirection = "Up", trailingPrice = 0, newTrailing = 0, spotStrikePrice = 0, retryTimeout = 5000, initialEquity = 0, targetProfit = 0, tradingHalted = false, straddlePlaced = false;
 let client, assetClient, optionsClient;
 function floor(num, precision = quotePrecision) {
     let exp = Math.pow(10, precision);
@@ -137,36 +137,6 @@ async function consoleAndFile(message) {
 async function logError(message) {
     await consoleAndFile((new Date()).toISOString());
     await consoleAndFile(message);
-    var { result: { loanAccountList }, retCode, retMsg } = await client.getCrossMarginAccountInfo();
-    if (retCode == 0) {
-        await consoleAndFile('Account Info:');
-        for (let position of loanAccountList) {
-            await consoleAndFile(`Token ${position.tokenId} free: ${position.free} loan: ${position.loan} locked: ${position.locked} total: ${position.total}`);
-        }
-    }
-    else {
-        await consoleAndFile(`Account info failure ${retMsg}`);
-    }
-    var { result: { list: orders }, retCode, retMsg } = await client.getOpenOrders(symbol, undefined, undefined, 1);
-    if (retCode == 0) {
-        await consoleAndFile('Stop Orders:');
-        for (let order of orders) {
-            await consoleAndFile(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} q:${order.orderQty} tp:${order.triggerPrice}`);
-        }
-    }
-    else {
-        await consoleAndFile(`Stop Orders failure ${retMsg}`);
-    }
-    var { result: { list: orders }, retCode, retMsg } = await client.getOpenOrders(symbol, undefined, undefined, 0);
-    if (retCode == 0) {
-        await consoleAndFile('Non SP Orders:');
-        for (let order of orders) {
-            await consoleAndFile(`${order.orderId} ${order.side} ${order.status} op:${order.orderPrice} ap:${order.avgPrice} q:${order.orderQty} eq:${order.execQty}`);
-        }
-    }
-    else {
-        await consoleAndFile(`Non SP Orders failure ${retMsg}`);
-    }
 }
 function calculateNetEquity(basePosition, quotePosition, price) {
     let qouteTotal = quotePosition.free - quotePosition.loan;
