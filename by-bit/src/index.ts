@@ -214,7 +214,7 @@ async function settleOption(symbol: string): Promise<boolean> {
     let entryPrice = parseFloat(optionPosition.entryPrice);
     let uPnl = parseFloat(optionPosition.unrealisedPnl);
     let size = Math.abs(parseFloat(optionPosition.size));
-    let targetProfit = entryPrice * optionROI;
+    let targetProfit = entryPrice * optionROI * size;
 
     if (uPnl < targetProfit) return false;
 
@@ -224,7 +224,8 @@ async function settleOption(symbol: string): Promise<boolean> {
         side: "Buy",
         symbol: symbol,
         timeInForce: "ImmediateOrCancel",
-        orderLinkId: `${uuid()}`
+        orderLinkId: `${uuid()}`,
+        reduceOnly: true
     });
     if (retCode != 0) {
         logError(`settlement failed ${symbol} ${size} upnl:${uPnl} target:${targetProfit} (${retCode}) failed ${retMsg}`);
