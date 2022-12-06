@@ -218,22 +218,20 @@ async function settleOption(symbol: string): Promise<boolean> {
 
     if (uPnl < targetProfit) return false;
 
-    let { retCode, retMsg } = await optionsClient.submitOrder({
-        orderQty: `${size}`,
-        orderType: "Market",
-        side: "Buy",
-        symbol: symbol,
-        timeInForce: "ImmediateOrCancel",
-        orderLinkId: `${uuid()}`,
-        reduceOnly: true
-    });
-    if (retCode != 0) {
+    while (true) {
+        let { retCode, retMsg } = await unifiedClient.submitOrder({
+            category: 'option',
+            qty: `${size}`,
+            orderType: "Market",
+            side: "Buy",
+            symbol: symbol,
+            timeInForce: "ImmediateOrCancel",
+            orderLinkId: `${uuid()}`,
+            reduceOnly: true
+        });
+        if (retCode == 0) return true;
         logError(`settlement failed ${symbol} ${size} upnl:${uPnl} target:${targetProfit} (${retCode}) failed ${retMsg}`);
-        return false;
     }
-
-    log(`settled ${symbol} size:${size} uPnL:${uPnl}`)
-    return true;
 }
 
 async function placeStraddle(price: number, size: number) {
@@ -254,37 +252,37 @@ async function placeStraddle(price: number, size: number) {
     putSymbol = `${baseCurrency}-${expiryTime.getUTCDate()}${months[expiryTime.getUTCMonth()]}${yearStr}-${lowerLimit}-P`;
     callSymbol = `${baseCurrency}-${expiryTime.getUTCDate()}${months[expiryTime.getUTCMonth()]}${yearStr}-${upperLimit}-C`;
 
-    var { retCode, retMsg } = await optionsClient.submitOrder({
-        orderQty: `${size}`,
-        orderType: "Market",
-        side: "Sell",
-        symbol: putSymbol,
-        timeInForce: "ImmediateOrCancel",
-        orderLinkId: `${uuid()}`
-    });
-    if (retCode != 0) {
-        logError(`put order failed ${putSymbol} ${size} (${retCode}) failed ${retMsg}`);
-    } else {
-        holdingPutOption = true;
+    while (true) {
+        var { retCode, retMsg } = await unifiedClient.submitOrder({
+            category: 'option',
+            orderType: 'Market',
+            side: 'Sell',
+            qty: `${size}`,
+            symbol: putSymbol,
+            timeInForce: 'ImmediateOrCancel',
+            orderLinkId: `${uuid()}`
+        });
+        if (retCode == 0) break;
+        logError(`put order failed ${putSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
     }
 
-    var { retCode, retMsg } = await optionsClient.submitOrder({
-        orderQty: `${size}`,
-        orderType: "Market",
-        side: "Sell",
-        symbol: callSymbol,
-        timeInForce: "ImmediateOrCancel",
-        orderLinkId: `${uuid()}`
-    });
-    if (retCode != 0) {
-        logError(`call order failed ${callSymbol} ${size} (${retCode}) failed ${retMsg}`);
-    } else {
-        holdingCallOpton = true;
+    while (true) {
+        var { retCode, retMsg } = await unifiedClient.submitOrder({
+            category: 'option',
+            orderType: 'Market',
+            qty: `${size}`,
+            side: 'Sell',
+            symbol: callSymbol,
+            timeInForce: 'ImmediateOrCancel',
+            orderLinkId: `${uuid()}`
+        });
+        if (retCode == 0) break;
+        logError(`call order failed ${callSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
     }
 
-    if (holdingCallOpton || holdingPutOption) {
-        log(`Placed straddle at:${price} size:${size} put:${holdingPutOption ? putSymbol : ''} call:${holdingCallOpton ? callSymbol : ''}`);
-    }
+    holdingCallOpton = true;
+    holdingPutOption = true;
+    log(`Placed straddle at:${price} size:${size} `);
 }
 
 async function executeTrade() {
@@ -300,6 +298,7 @@ async function executeTrade() {
         tradableEquity = initialEquity * tradeMargin;
         targetProfit = floor(tradableEquity * targetROI, quotePrecision);
         quantity = floor((tradableEquity * leverage) / price, basePrecision);
+        trailingDirection = (position.free > position.loan) ? "Up" : "Down";
     }
 
     let borrowing = position.loan >= quantity;
@@ -383,13 +382,14 @@ async function executeTrade() {
             await moveFundsToSpot();
             spotStrikePrice = 0;
             initialEquity = 0;
+            sideWaysCount = 0;
             return;
         }
 
         if (holdingCallOpton || holdingPutOption) return;
 
         let profit = netEquity - initialEquity - targetProfit;
-        log(`netEquity:${netEquity} initialEquity:${initialEquity} targetProfit:${targetProfit} profit:${(profit + targetProfit)}`);
+        log(`netEquity:${netEquity} initialEquity:${initialEquity} targetProfit:${targetProfit} grossProfit:${(netEquity - initialEquity)}`);
         if (profit > 0) {
             await settleAccount(position, price);
             spotStrikePrice = 0;
@@ -445,26 +445,34 @@ function resetState() {
 }
 
 async function splitEquity(unifiedAmount: number) {
+    unifiedAmount = floor(unifiedAmount, quotePrecision);
     if (unifiedAmount == 0) return;
 
     if (unifiedAmount > 0) {
-        await assetsClient.createInternalTransfer({
-            amount: `${unifiedAmount}`,
-            coin: quoteCurrency,
-            from_account_type: "SPOT",
-            to_account_type: "UNIFIED",
-            transfer_id: `${uuid()}`
-        });
-        return;
+        while (true) {
+            var { ret_code, ret_msg } = await assetsClient.createInternalTransfer({
+                amount: `${unifiedAmount}`,
+                coin: quoteCurrency,
+                from_account_type: "SPOT",
+                to_account_type: "UNIFIED",
+                transfer_id: `${uuid()}`
+            });
+            if (ret_code == 0) return;
+            logError(`Failed to split Equity ${quoteCurrency} ${unifiedAmount} SPOT -> UNIFIED ${ret_msg}`);
+        }
     }
 
-    await assetsClient.createInternalTransfer({
-        amount: `${Math.abs(unifiedAmount)}`,
-        coin: quoteCurrency,
-        from_account_type: "UNIFIED",
-        to_account_type: "SPOT",
-        transfer_id: `${uuid()}`
-    });
+    while (true) {
+        var { ret_code, ret_msg } = await assetsClient.createInternalTransfer({
+            amount: `${Math.abs(unifiedAmount)}`,
+            coin: quoteCurrency,
+            from_account_type: "UNIFIED",
+            to_account_type: "SPOT",
+            transfer_id: `${uuid()}`
+        });
+        if (ret_code == 0) return;
+        logError(`Failed to split Equity ${quoteCurrency} ${Math.abs(unifiedAmount)} UNIFIED -> SPOT ${ret_msg}`);
+    }
 }
 
 async function moveFundsToSpot() {
@@ -472,13 +480,18 @@ async function moveFundsToSpot() {
     if (!coin || coin.length == 0 || coin[0].availableBalance == 0) return
 
     let amount = floor(coin[0].availableBalance, quotePrecision);
-    await assetsClient.createInternalTransfer({
-        amount: `${amount}`,
-        coin: quoteCurrency,
-        from_account_type: "UNIFIED",
-        to_account_type: "SPOT",
-        transfer_id: `${uuid()}`
-    });
+
+    while (true) {
+        var { ret_code, ret_msg } = await assetsClient.createInternalTransfer({
+            amount: `${amount}`,
+            coin: quoteCurrency,
+            from_account_type: "UNIFIED",
+            to_account_type: "SPOT",
+            transfer_id: `${uuid()}`
+        });
+        if (ret_code == 0) return;
+        logError(`Failed to move funds to SPOT ${quoteCurrency} ${Math.abs(amount)} UNIFIED -> SPOT ${ret_msg}`);
+    }
 }
 
 async function closeUnifiedAccount() {
@@ -532,18 +545,18 @@ while (true) {
             let checkExpression = new RegExp(`^${baseCurrency}-(\\d+)(\\w{3})(\\d{2})-(\\d*)-(P|C)$`);
 
             for (let c = 0; c < (list || []).length; c++) {
-                let optionPosition = <OptionPosition>list[0];
+                let optionPosition = <OptionPosition>list[c];
                 let matches = optionPosition.symbol.match(checkExpression);
                 if (!matches) continue;
                 if (matches[5] == 'P') {
                     holdingPutOption = true;
                     lowerLimit = parseFloat(matches[4]);
-                    callSymbol = optionPosition.symbol;
+                    putSymbol = optionPosition.symbol;
                 }
                 if (matches[5] == 'C') {
                     holdingCallOpton = true;
                     upperLimit = parseFloat(matches[4]);
-                    putSymbol = optionPosition.symbol;
+                    callSymbol = optionPosition.symbol;
                 }
                 let mIndex = months.indexOf(matches[2]);
                 expiryTime = new Date();
