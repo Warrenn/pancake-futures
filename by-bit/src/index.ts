@@ -293,11 +293,19 @@ async function executeTrade() {
     price = floor(price, quotePrecision);
 
     if (spotStrikePrice == 0) spotStrikePrice = price;
-    if (initialEquity == 0) {
+    if (initialEquity == 0 && !holdingCallOpton && !holdingPutOption) {
         initialEquity = calculateNetEquity(position, quotePosition, price);
         tradableEquity = initialEquity * tradeMargin;
         targetProfit = floor(tradableEquity * targetROI, quotePrecision);
         quantity = floor((tradableEquity * leverage) / price, basePrecision);
+        trailingDirection = (position.free > position.loan) ? "Up" : "Down";
+    }
+    if (initialEquity == 0 && (holdingCallOpton || holdingPutOption)) {
+        initialEquity = calculateNetEquity(position, quotePosition, price);
+        let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
+        tradableEquity = (!coin || coin.length == 0) ? 0 : floor(coin[0].equity, quotePrecision);
+        targetProfit = floor(tradableEquity * targetROI, quotePrecision);
+        quantity = floor((tradableEquity * leverage) / price, optionPrecision);
         trailingDirection = (position.free > position.loan) ? "Up" : "Down";
     }
 
