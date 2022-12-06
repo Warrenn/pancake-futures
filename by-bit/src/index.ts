@@ -217,6 +217,7 @@ async function settleOption(symbol: string): Promise<boolean> {
     let targetProfit = entryPrice * optionROI * size;
 
     if (uPnl < targetProfit) return false;
+    log(`settling option  ${symbol} ${size} upnl:${uPnl} target:${targetProfit}`);
 
     while (true) {
         let { retCode, retMsg } = await unifiedClient.submitOrder({
@@ -311,14 +312,6 @@ async function executeTrade() {
 
     let borrowing = position.loan >= quantity;
 
-    if (holdingPutOption && (price < lowerLimit)) {
-        spotStrikePrice = lowerLimit;
-    }
-
-    if (holdingCallOpton && (price > upperLimit)) {
-        spotStrikePrice = upperLimit;
-    }
-
     log(`holding:${position.free} onloan:${position.loan} price:${price} strike:${spotStrikePrice} direction:${trailingDirection} tp:${trailingPrice} sideways:${sideWaysCount} u:${upperLimit} l:${lowerLimit} hc:${holdingCallOpton} hp:${holdingPutOption}`);
 
     if (!borrowing) {
@@ -394,11 +387,9 @@ async function executeTrade() {
             return;
         }
 
-        if (holdingCallOpton || holdingPutOption) return;
-
         let profit = netEquity - initialEquity - targetProfit;
         log(`netEquity:${netEquity} initialEquity:${initialEquity} targetProfit:${targetProfit} grossProfit:${(netEquity - initialEquity)}`);
-        if (profit > 0) {
+        if (profit > 0 && !holdingCallOpton && !holdingPutOption) {
             await settleAccount(position, price);
             spotStrikePrice = 0;
             initialEquity = 0;
@@ -410,20 +401,44 @@ async function executeTrade() {
 
     let netPosition = floor(position.free - position.loan, basePrecision);
 
-    let outOfMoneyCall = netPosition != 0 && holdingCallOpton && price < upperLimit;
-    if ((outOfMoneyCall && !holdingPutOption) || (outOfMoneyCall && price > lowerLimit)) {
+    if (netPosition != 0 &&
+        holdingCallOpton &&
+        price < upperLimit &&
+        (!holdingPutOption || price > lowerLimit)) {
         await settleAccount(position, price);
         trailingDirection = "Down";
+        return;
     }
 
-    let outOfMoneyPut = netPosition != 0 && holdingPutOption && price > lowerLimit;
-    if ((outOfMoneyPut && !holdingCallOpton) || (outOfMoneyPut && price < upperLimit)) {
+    if (netPosition != 0 &&
+        holdingPutOption &&
+        price > lowerLimit &&
+        (!holdingCallOpton || price < upperLimit)) {
         await settleAccount(position, price);
         trailingDirection = "Up";
+        return;
+    }
+
+    if (holdingPutOption && price < lowerLimit && position.free > 0) {
+        let sellAmount = floor(position.free, basePrecision);
+        let sellPrice = floor(price * (1 - slippage), quotePrecision);
+        await immediateSell(symbol, sellAmount, sellPrice);
+        trailingDirection = "Down";
+        return;
     }
 
     let longAmount = floor(quantity - netPosition, basePrecision);
-    if ((price > spotStrikePrice) && (longAmount > 0) && (holdingCallOpton || !holdingPutOption)) {
+    if (holdingCallOpton && price > upperLimit && longAmount > 0) {
+        let buyAmount = floor(longAmount, basePrecision);
+        let buyPrice = floor(price * (1 + slippage), quotePrecision);
+        await immediateBuy(symbol, buyAmount, buyPrice);
+        trailingDirection = "Up";
+        return;
+    }
+
+    if (holdingCallOpton || holdingPutOption) return;
+
+    if ((price > spotStrikePrice) && (longAmount > 0)) {
         let buyAmount = floor(longAmount, basePrecision);
         let buyPrice = floor(price * (1 + slippage), quotePrecision);
         await immediateBuy(symbol, buyAmount, buyPrice);
@@ -431,7 +446,7 @@ async function executeTrade() {
         sideWaysCount++;
     }
 
-    if ((price < spotStrikePrice) && (position.free > 0) && (holdingPutOption || !holdingCallOpton)) {
+    if ((price < spotStrikePrice) && (position.free > 0)) {
         let sellAmount = floor(position.free, basePrecision);
         let sellPrice = floor(price * (1 - slippage), quotePrecision);
         await immediateSell(symbol, sellAmount, sellPrice);
