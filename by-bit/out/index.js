@@ -495,10 +495,19 @@ while (true) {
             await asyncSleep(200);
             currentMoment = new Date();
             if ((holdingCallOpton || holdingPutOption) && currentMoment > expiryTime) {
+                spotStrikePrice = 0;
+                initialEquity = 0;
+                targetProfit = 0;
+                sideWaysCount = 0;
                 holdingCallOpton = false;
                 holdingPutOption = false;
                 putSymbol = '';
                 callSymbol = '';
+                let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
+                let { result: { price } } = await client.getLastTradedPrice(symbol);
+                let position = getPosition(loanAccountList, baseCurrency, basePrecision);
+                price = floor(price, quotePrecision);
+                await settleAccount(position, price);
                 await moveFundsToSpot();
             }
             await executeTrade();
