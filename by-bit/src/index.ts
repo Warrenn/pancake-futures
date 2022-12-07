@@ -306,7 +306,6 @@ async function executeTrade() {
     let borrowing = position.loan >= quantity;
 
     log(`holding:${position.free} onloan:${position.loan} price:${price} strike:${spotStrikePrice} sideways:${sideWaysCount} `);
-    log(`expiry:${expiryTime?.toISOString()} call:${JSON.stringify(callOption)} put:${JSON.stringify(putOption)} `);
 
     if (!borrowing) {
         let borrowAmount = floor(quantity - position.loan, basePrecision);
@@ -318,7 +317,6 @@ async function executeTrade() {
     }
 
     if (sideWaysCount > sidewaysLimit && !expiryTime) {
-        //TODO: remember to change this
         log(`Trading sideways ${sideWaysCount}`);
 
         let spotEquity = calculateNetEquity(position, quotePosition, price);
@@ -493,7 +491,7 @@ async function moveFundsToSpot() {
     let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
     if (!coin || coin.length == 0 || coin[0].availableBalance == 0) return
 
-    let amount = floor(coin[0].availableBalance, quotePrecision);
+    let amount = floor(coin[0].availableBalance, quotePrecision) - 1;
 
     while (true) {
         var { ret_code, ret_msg } = await assetsClient.createInternalTransfer({
@@ -504,7 +502,7 @@ async function moveFundsToSpot() {
             transfer_id: `${uuid()}`
         });
         if (ret_code == 0) return;
-        logError(`Failed to move funds to SPOT ${quoteCurrency} ${Math.abs(amount)} UNIFIED -> SPOT ${ret_msg}`);
+        logError(`Failed to move funds to SPOT ${quoteCurrency} ${Math.abs(amount)} UNIFIED -> SPOT ${ret_code} ${ret_msg}`);
     }
 }
 
@@ -535,7 +533,7 @@ while (true) {
         });
 
         while (true) {
-            await asyncSleep(200);
+            //await asyncSleep(200);
             await executeTrade();
 
             currentMoment = new Date();
