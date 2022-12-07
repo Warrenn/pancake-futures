@@ -289,9 +289,6 @@ async function placeStraddle(price: number, size: number) {
 }
 
 async function executeTrade() {
-    //TODO:adjust lower, upper and strike just a little to reduce slippage
-    //TODO:check if you can use 50x leverage for option trading
-    //TODO:adjust trading range
     let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
     let position = getPosition(loanAccountList, baseCurrency, basePrecision);
     let quotePosition = getPosition(loanAccountList, quoteCurrency, quotePrecision);
@@ -518,17 +515,6 @@ async function moveFundsToSpot() {
     }
 }
 
-async function closeUnifiedAccount() {
-    let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
-    let position = getPosition(loanAccountList, baseCurrency, basePrecision);
-
-    let { result: { price } } = await client.getLastTradedPrice(symbol);
-    price = floor(price, quotePrecision);
-
-    await settleAccount(position, price);
-    await moveFundsToSpot();
-}
-
 process.stdin.on('data', process.exit.bind(process, 0));
 await writeFile('errors.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
 
@@ -610,7 +596,7 @@ while (true) {
                 holdingPutOption = false;
                 putSymbol = '';
                 callSymbol = '';
-                await closeUnifiedAccount();
+                await moveFundsToSpot();
             }
             await executeTrade();
         }
