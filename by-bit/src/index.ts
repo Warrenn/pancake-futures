@@ -237,8 +237,10 @@ async function settleOption(symbol: string): Promise<boolean> {
 
 async function placeStraddle(price: number, size: number) {
 
-    lowerLimit = Math.floor(price / 25) * 25;
-    upperLimit = lowerLimit + 25;
+    let contractPrice = Math.floor(price / 25) * 25;
+
+    lowerLimit = (price % 25) < 12.5 ? contractPrice - 25 : contractPrice;
+    upperLimit = lowerLimit + 50;
 
     expiryTime = new Date();
     expiryTime.setUTCDate(expiryTime.getUTCDate() + ((expiryTime.getUTCHours() < 8) ? 0 : 1));
@@ -287,11 +289,20 @@ async function placeStraddle(price: number, size: number) {
 }
 
 async function executeTrade() {
+    //TODO:adjust lower, upper and strike just a little to reduce slippage
+    //TODO:check if you can use 50x leverage for option trading
+    //TODO:adjust trading range
     let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
     let position = getPosition(loanAccountList, baseCurrency, basePrecision);
     let quotePosition = getPosition(loanAccountList, quoteCurrency, quotePrecision);
-    let { result: { price } } = await client.getLastTradedPrice(symbol);
-    price = floor(price, quotePrecision);
+    let price: number = 0;
+    while (true) {
+        var { result: { price: p }, retCode, retMsg } = await client.getLastTradedPrice(symbol);
+        price = floor(p, quotePrecision);
+        if (isNaN(price)) continue;
+        if (retCode == 0) break;
+        logError(`Failed getting price ${retMsg}`)
+    }
 
     if (spotStrikePrice == 0) spotStrikePrice = price;
     if (initialEquity == 0 && !holdingCallOpton && !holdingPutOption) {
@@ -391,6 +402,7 @@ async function executeTrade() {
         log(`netEquity:${netEquity} initialEquity:${initialEquity} targetProfit:${targetProfit} grossProfit:${(netEquity - initialEquity)}`);
         if (profit > 0 && !holdingCallOpton && !holdingPutOption) {
             await settleAccount(position, price);
+            await moveFundsToSpot();
             spotStrikePrice = 0;
             initialEquity = 0;
             targetProfit = 0;
@@ -454,17 +466,6 @@ async function executeTrade() {
         sideWaysCount++;
     }
 
-}
-
-function resetState() {
-    spotStrikePrice = 0;
-    initialEquity = 0;
-    targetProfit = 0;
-    sideWaysCount = 0;
-    holdingCallOpton = false;
-    holdingPutOption = false;
-    putSymbol = '';
-    callSymbol = '';
 }
 
 async function splitEquity(unifiedAmount: number) {
@@ -531,7 +532,14 @@ async function closeUnifiedAccount() {
 process.stdin.on('data', process.exit.bind(process, 0));
 await writeFile('errors.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
 
-resetState();
+spotStrikePrice = 0;
+initialEquity = 0;
+targetProfit = 0;
+sideWaysCount = 0;
+holdingCallOpton = false;
+holdingPutOption = false;
+putSymbol = '';
+callSymbol = '';
 
 while (true) {
     try {
@@ -598,8 +606,11 @@ while (true) {
             await asyncSleep(200);
             currentMoment = new Date();
             if ((holdingCallOpton || holdingPutOption) && currentMoment > expiryTime) {
+                holdingCallOpton = false;
+                holdingPutOption = false;
+                putSymbol = '';
+                callSymbol = '';
                 await closeUnifiedAccount();
-                resetState();
             }
             await executeTrade();
         }
