@@ -152,7 +152,7 @@ async function settleOption(optionPosition) {
     let targetProfit = entryPrice * optionROI * size;
     if (uPnl < targetProfit)
         return false;
-    log(`settling option  ${symbol} ${size} upnl:${uPnl} target:${targetProfit}`);
+    log(`settling option  ${optionPosition.symbol} ${size} upnl:${uPnl} target:${targetProfit}`);
     while (true) {
         let { retCode, retMsg } = await unifiedClient.submitOrder({
             category: 'option',
@@ -164,9 +164,11 @@ async function settleOption(optionPosition) {
             orderLinkId: `${uuid()}`,
             reduceOnly: true
         });
+        if (retCode == 110063)
+            return false;
         if (retCode == 0)
             return true;
-        logError(`settlement failed ${symbol} ${size} upnl:${uPnl} target:${targetProfit} (${retCode}) failed ${retMsg}`);
+        logError(`settlement failed ${optionPosition.symbol} ${size} upnl:${uPnl} target:${targetProfit} (${retCode}) failed ${retMsg}`);
     }
 }
 async function placeStraddle(price, size) {
@@ -253,7 +255,7 @@ async function executeTrade() {
     let borrowing = position.loan >= quantity;
     let netEquity = calculateNetEquity(position, quotePosition, price);
     let profit = netEquity - initialEquity - targetProfit;
-    log(`holding:${position.free} onloan:${position.loan} price:${price} strike:${spotStrikePrice} sideways:${sideWaysCount} netEquity:${netEquity} initialEquity:${initialEquity} targetProfit:${targetProfit} grossProfit:${(netEquity - initialEquity)}`);
+    log(`f:${position.free} l:${position.loan} p:${price} q:${quantity} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime} u:${upperLimit} l:${lowerLimit} c:${callOption === null || callOption === void 0 ? void 0 : callOption.unrealisedPnl} p:${putOption === null || putOption === void 0 ? void 0 : putOption.unrealisedPnl}`);
     if (!borrowing) {
         let borrowAmount = floor(quantity - position.loan, basePrecision);
         await borrowFunds(baseCurrency, borrowAmount);
@@ -277,35 +279,19 @@ async function executeTrade() {
         sideWaysCount = 0;
         return;
     }
-    let optionChanged = false;
-    let optionSettled = await settleOption(putOption);
-    if (optionSettled) {
-        putOption = null;
-        optionChanged = true;
-    }
-    optionSettled = await settleOption(callOption);
-    if (optionSettled) {
-        callOption = null;
-        optionChanged = true;
-    }
-    if (!callOption && !putOption && optionChanged) {
-        await settleAccount(position, price);
-        await moveFundsToSpot();
-        spotStrikePrice = 0;
-        initialEquity = 0;
-        sideWaysCount = 0;
+    if (await settleOption(putOption))
         return;
-    }
-    if (profit > 0 && !callOption && !putOption) {
-        await settleAccount(position, price);
-        await moveFundsToSpot();
-        spotStrikePrice = 0;
-        initialEquity = 0;
-        targetProfit = 0;
-        sideWaysCount = 0;
+    if (await settleOption(callOption))
         return;
-    }
     let netPosition = floor(position.free - position.loan, basePrecision);
+    if (expiryTime && !callOption && !putOption && netPosition != 0) {
+        await settleAccount(position, price);
+        await moveFundsToSpot();
+        spotStrikePrice = 0;
+        initialEquity = 0;
+        sideWaysCount = 0;
+        return;
+    }
     if ((callOption || putOption) &&
         netPosition != 0 &&
         price < upperLimit &&
@@ -328,6 +314,15 @@ async function executeTrade() {
     }
     if (callOption || putOption)
         return;
+    if (profit > 0) {
+        await settleAccount(position, price);
+        await moveFundsToSpot();
+        spotStrikePrice = 0;
+        initialEquity = 0;
+        targetProfit = 0;
+        sideWaysCount = 0;
+        return;
+    }
     if ((price > spotStrikePrice) && (longAmount > 0)) {
         let buyAmount = floor(longAmount, basePrecision);
         let buyPrice = floor(price * (1 + slippage), quotePrecision);
