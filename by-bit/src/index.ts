@@ -204,7 +204,7 @@ async function settleOption(optionPosition: OptionPosition | null): Promise<bool
     let targetProfit = entryPrice * optionROI * size;
 
     if (uPnl < targetProfit) return false;
-    log(`settling option  ${symbol} ${size} upnl:${uPnl} target:${targetProfit}`);
+    log(`settling option  ${optionPosition.symbol} ${size} upnl:${uPnl} target:${targetProfit}`);
 
     while (true) {
         let { retCode, retMsg } = await unifiedClient.submitOrder({
@@ -212,13 +212,14 @@ async function settleOption(optionPosition: OptionPosition | null): Promise<bool
             qty: `${size}`,
             orderType: "Market",
             side: "Buy",
-            symbol: symbol,
+            symbol: optionPosition.symbol,
             timeInForce: "ImmediateOrCancel",
             orderLinkId: `${uuid()}`,
             reduceOnly: true
         });
+        if (retCode == 110063) return false;
         if (retCode == 0) return true;
-        logError(`settlement failed ${symbol} ${size} upnl:${uPnl} target:${targetProfit} (${retCode}) failed ${retMsg}`);
+        logError(`settlement failed ${optionPosition.symbol} ${size} upnl:${uPnl} target:${targetProfit} (${retCode}) failed ${retMsg}`);
     }
 }
 
@@ -304,8 +305,10 @@ async function executeTrade() {
     }
 
     let borrowing = position.loan >= quantity;
+    let netEquity = calculateNetEquity(position, quotePosition, price);
+    let profit = netEquity - initialEquity - targetProfit;
 
-    log(`holding:${position.free} onloan:${position.loan} price:${price} strike:${spotStrikePrice} sideways:${sideWaysCount} `);
+    log(`f:${position.free} l:${position.loan} p:${price} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
 
     if (!borrowing) {
         let borrowAmount = floor(quantity - position.loan, basePrecision);
@@ -337,44 +340,20 @@ async function executeTrade() {
         return;
     }
 
-    let optionChanged = false;
-
-    let optionSettled = await settleOption(putOption);
-    if (optionSettled) {
-        putOption = null;
-        optionChanged = true;
-    }
-
-    optionSettled = await settleOption(callOption);
-    if (optionSettled) {
-        callOption = null;
-        optionChanged = true;
-    }
-
-    if (!callOption && !putOption && optionChanged) {
-        await settleAccount(position, price);
-        await moveFundsToSpot();
-
-        spotStrikePrice = 0;
-        initialEquity = 0;
-        sideWaysCount = 0;
-        return;
-    }
-
-    let netEquity = calculateNetEquity(position, quotePosition, price);
-    let profit = netEquity - initialEquity - targetProfit;
-    log(`netEquity:${netEquity} initialEquity:${initialEquity} targetProfit:${targetProfit} grossProfit:${(netEquity - initialEquity)}`);
-    if (profit > 0 && !callOption && !putOption) {
-        await settleAccount(position, price);
-        await moveFundsToSpot();
-        spotStrikePrice = 0;
-        initialEquity = 0;
-        targetProfit = 0;
-        sideWaysCount = 0;
-        return;
-    }
+    if (await settleOption(putOption)) return;
+    if (await settleOption(callOption)) return;
 
     let netPosition = floor(position.free - position.loan, basePrecision);
+
+    if (expiryTime && !callOption && !putOption && netPosition != 0) {
+        await settleAccount(position, price);
+        await moveFundsToSpot();
+
+        spotStrikePrice = 0;
+        initialEquity = 0;
+        sideWaysCount = 0;
+        return;
+    }
 
     if ((callOption || putOption) &&
         netPosition != 0 &&
@@ -400,6 +379,16 @@ async function executeTrade() {
     }
 
     if (callOption || putOption) return;
+
+    if (profit > 0) {
+        await settleAccount(position, price);
+        await moveFundsToSpot();
+        spotStrikePrice = 0;
+        initialEquity = 0;
+        targetProfit = 0;
+        sideWaysCount = 0;
+        return;
+    }
 
     if ((price > spotStrikePrice) && (longAmount > 0)) {
         let buyAmount = floor(longAmount, basePrecision);

@@ -159,7 +159,7 @@ async function settleOption(optionPosition) {
             qty: `${size}`,
             orderType: "Market",
             side: "Buy",
-            symbol: symbol,
+            symbol: optionPosition.symbol,
             timeInForce: "ImmediateOrCancel",
             orderLinkId: `${uuid()}`,
             reduceOnly: true
@@ -251,7 +251,9 @@ async function executeTrade() {
         quantity = parseFloat(`${option === null || option === void 0 ? void 0 : option.size}`);
     }
     let borrowing = position.loan >= quantity;
-    log(`holding:${position.free} onloan:${position.loan} price:${price} strike:${spotStrikePrice} sideways:${sideWaysCount} `);
+    let netEquity = calculateNetEquity(position, quotePosition, price);
+    let profit = netEquity - initialEquity - targetProfit;
+    log(`holding:${position.free} onloan:${position.loan} price:${price} strike:${spotStrikePrice} sideways:${sideWaysCount} netEquity:${netEquity} initialEquity:${initialEquity} targetProfit:${targetProfit} grossProfit:${(netEquity - initialEquity)}`);
     if (!borrowing) {
         let borrowAmount = floor(quantity - position.loan, basePrecision);
         await borrowFunds(baseCurrency, borrowAmount);
@@ -294,9 +296,6 @@ async function executeTrade() {
         sideWaysCount = 0;
         return;
     }
-    let netEquity = calculateNetEquity(position, quotePosition, price);
-    let profit = netEquity - initialEquity - targetProfit;
-    log(`netEquity:${netEquity} initialEquity:${initialEquity} targetProfit:${targetProfit} grossProfit:${(netEquity - initialEquity)}`);
     if (profit > 0 && !callOption && !putOption) {
         await settleAccount(position, price);
         await moveFundsToSpot();
