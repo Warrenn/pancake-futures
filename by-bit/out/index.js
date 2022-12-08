@@ -255,7 +255,7 @@ async function executeTrade() {
     let borrowing = position.loan >= quantity;
     let netEquity = calculateNetEquity(position, quotePosition, price);
     let profit = netEquity - initialEquity - targetProfit;
-    log(`f:${position.free} l:${position.loan} p:${price} q:${quantity} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime} u:${upperLimit} l:${lowerLimit} c:${callOption === null || callOption === void 0 ? void 0 : callOption.unrealisedPnl} p:${putOption === null || putOption === void 0 ? void 0 : putOption.unrealisedPnl}`);
+    log(`f:${position.free} l:${position.loan} p:${price} q:${quantity} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime === null || expiryTime === void 0 ? void 0 : expiryTime.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption === null || callOption === void 0 ? void 0 : callOption.unrealisedPnl} p:${putOption === null || putOption === void 0 ? void 0 : putOption.unrealisedPnl}`);
     if (!borrowing) {
         let borrowAmount = floor(quantity - position.loan, basePrecision);
         await borrowFunds(baseCurrency, borrowAmount);

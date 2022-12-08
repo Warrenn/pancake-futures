@@ -301,7 +301,7 @@ async function executeTrade() {
     if (initialEquity == 0 && (callOption || putOption)) {
         initialEquity = calculateNetEquity(position, quotePosition, price);
         let option = callOption || putOption;
-        quantity = parseFloat(`${option?.size}`);
+        quantity = Math.abs(parseFloat(`${option?.size}`));
     }
 
     let borrowing = position.loan >= quantity;
