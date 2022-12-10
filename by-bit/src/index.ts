@@ -46,7 +46,18 @@ let spotStrikePrice: number = 0,
     expiryTime: Date | null = null,
     client: SpotClientV3,
     assetsClient: AccountAssetClient,
-    unifiedClient: UnifiedMarginClient;
+    unifiedClient: UnifiedMarginClient,
+    optionsNeedUpdate: boolean = false,
+    positionsNeedUpdate: boolean = false,
+    optionsSubcriptions: string[] = [],
+    optionsUnSubcriptions: string[] = [],
+    optionsTriggers: { [key: string]: number } = {},
+    callOption: OptionPosition | null = null,
+    putOption: OptionPosition | null = null,
+    basePosition: Position,
+    quotePosition: Position,
+    expiry: Date | null = null;
+;
 
 function floor(num: number, precision: number = quotePrecision) {
     let exp = Math.pow(10, precision);
@@ -55,6 +66,7 @@ function floor(num: number, precision: number = quotePrecision) {
 
 async function immediateSell(symbol: string, orderQty: number, price: number, coin: string = baseCurrency) {
     orderQty = floor(orderQty, basePrecision);
+    if (orderQty == 0) return;
 
     while (true) {
         price = floor(price, quotePrecision)
@@ -87,6 +99,7 @@ async function immediateSell(symbol: string, orderQty: number, price: number, co
 
 async function immediateBuy(symbol: string, orderQty: number, price: number, quoteCoin: string = quoteCurrency) {
     orderQty = floor(orderQty, basePrecision);
+    if (orderQty == 0) return;
 
     while (true) {
         price = floor(price, quotePrecision)
@@ -177,7 +190,7 @@ function calculateNetEquity(basePosition: Position, quotePosition: Position, pri
 async function settleAccount(position: Position, price: number) {
     log(`Settling account free: ${position.free} loan: ${position.loan} price: ${price}`);
     if (position.free < position.loan) {
-        let buyAmount = floor(position.loan - position.free, basePrecision);;
+        let buyAmount = floor(position.loan - position.free, basePrecision);
         let buyPrice = floor(price * (1 + slippage), quotePrecision);
         await immediateBuy(symbol, buyAmount, buyPrice);
     }
@@ -195,7 +208,7 @@ function getPosition(loanAccountList: Position[], tokenId: string, precision: nu
     return position;
 }
 
-async function settleOption(optionPosition: OptionPosition | null): Promise<boolean> {
+async function settleOption(optionPosition: OptionPosition | null, force: boolean = false): Promise<boolean> {
     if (!optionPosition) return false;
 
     let entryPrice = parseFloat(optionPosition.entryPrice);
@@ -203,7 +216,7 @@ async function settleOption(optionPosition: OptionPosition | null): Promise<bool
     let size = Math.abs(parseFloat(optionPosition.size));
     let targetProfit = entryPrice * optionROI * size;
 
-    if (uPnl < targetProfit) return false;
+    if (!force && uPnl < targetProfit) return false;
     log(`settling option  ${optionPosition.symbol} ${size} upnl:${uPnl} target:${targetProfit}`);
 
     while (true) {
@@ -272,16 +285,45 @@ async function placeStraddle(price: number, size: number): Promise<Date | null> 
     return expiryTime;
 }
 
+async function updatePositions(): Promise<{ basePosition: Position, quotePosition: Position }> {
+    let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
+    let basePosition = getPosition(loanAccountList, baseCurrency, basePrecision);
+    let quotePosition = getPosition(loanAccountList, baseCurrency, basePrecision);
+    return { basePosition, quotePosition };
+}
+
+async function reconcileLoan(basePosition: Position, quantity: number, price: number) {
+    if (basePosition.loan == quantity) return;
+
+    if (basePosition.loan < quantity) {
+        let borrowAmount = floor(quantity - basePosition.loan, basePrecision);
+        await borrowFunds(baseCurrency, borrowAmount);
+        await updatePositions();
+        return;
+    }
+
+    let repayment = floor(basePosition.loan - quantity, basePrecision);
+
+    if (repayment > basePosition.free) {
+        let buyAmount = repayment - basePosition.free;
+        let buyPrice = floor(price * (1 + slippage), quotePrecision);
+        await immediateBuy(symbol, buyAmount, buyPrice);
+    }
+
+    while (true) {
+        let { retCode, retMsg } = await client.repayCrossMarginLoan(baseCurrency, `${repayment}`);
+        if (retCode == 0) break;
+        logError(`couldn't reconcile loan:${basePosition.loan} free:${basePosition.free} quantity:${quantity} repayment:${repayment} (${retCode}) ${retMsg}`);
+    }
+
+    await updatePositions();
+}
+
 async function executeTrade() {
-    let { callOption, putOption, expiry } = await getOptions();
     if (expiryTime == null) expiryTime = expiry;
     if (lowerLimit == 0 && putOption) lowerLimit = putOption.limit;
     if (upperLimit == 0 && callOption) upperLimit = callOption.limit;
-    if (expiryTime && !callOption && !putOption) return;
 
-    let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
-    let position = getPosition(loanAccountList, baseCurrency, basePrecision);
-    let quotePosition = getPosition(loanAccountList, quoteCurrency, quotePrecision);
     let price: number = 0;
     while (true) {
         var { result: { price: p }, retCode, retMsg } = await client.getLastTradedPrice(symbol);
@@ -293,36 +335,29 @@ async function executeTrade() {
 
     if (spotStrikePrice == 0) spotStrikePrice = price;
     if (initialEquity == 0 && !callOption && !putOption) {
-        initialEquity = calculateNetEquity(position, quotePosition, price);
+        initialEquity = calculateNetEquity(basePosition, quotePosition, price);
         let tradableEquity = initialEquity * tradeMargin;
         targetProfit = floor(tradableEquity * targetROI, quotePrecision);
         quantity = floor((tradableEquity * leverage) / price, basePrecision);
     }
     if (initialEquity == 0 && (callOption || putOption)) {
-        initialEquity = calculateNetEquity(position, quotePosition, price);
+        initialEquity = calculateNetEquity(basePosition, quotePosition, price);
         let option = callOption || putOption;
         quantity = Math.abs(parseFloat(`${option?.size}`));
     }
 
-    let borrowing = position.loan >= quantity;
-    let netEquity = calculateNetEquity(position, quotePosition, price);
+    let netEquity = calculateNetEquity(basePosition, quotePosition, price);
     let profit = netEquity - initialEquity - targetProfit;
 
-    log(`f:${position.free} l:${position.loan} p:${price} q:${quantity} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime?.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
+    log(`f:${basePosition.free} l:${basePosition.loan} p:${price} q:${quantity} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime?.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
 
-    if (!borrowing) {
-        let borrowAmount = floor(quantity - position.loan, basePrecision);
-        await borrowFunds(baseCurrency, borrowAmount);
-
-        ({ result: { loanAccountList } } = await client.getCrossMarginAccountInfo());
-        position = getPosition(loanAccountList, baseCurrency, basePrecision);
-        quotePosition = getPosition(loanAccountList, quoteCurrency, quotePrecision);
-    }
-
-    if (sideWaysCount > sidewaysLimit && !expiryTime) {
+    if (sideWaysCount > sidewaysLimit) {
         log(`Trading sideways ${sideWaysCount}`);
 
-        let spotEquity = calculateNetEquity(position, quotePosition, price);
+        await settleOption(putOption, true);
+        await settleOption(callOption, true);
+
+        let spotEquity = calculateNetEquity(basePosition, quotePosition, price);
         let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
         let availiableUnified = (!coin || coin.length == 0) ? 0 : floor(coin[0].availableBalance, quotePrecision);
         let equity = (spotEquity + availiableUnified)
@@ -331,7 +366,7 @@ async function executeTrade() {
         quantity = floor((tradableEquity * leverage) / ((1 + optionIM) * price), optionPrecision);
         let requiredMargin = price * quantity * optionIM;
 
-        await settleAccount(position, price);
+        await settleAccount(basePosition, price);
         await splitEquity(requiredMargin);
         expiryTime = await placeStraddle(price, quantity);
 
@@ -343,10 +378,10 @@ async function executeTrade() {
     if (await settleOption(putOption)) return;
     if (await settleOption(callOption)) return;
 
-    let netPosition = floor(position.free - position.loan, basePrecision);
+    let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
 
     if (expiryTime && !callOption && !putOption && netPosition != 0) {
-        await settleAccount(position, price);
+        await settleAccount(basePosition, price);
         await moveFundsToSpot();
 
         spotStrikePrice = 0;
@@ -354,19 +389,22 @@ async function executeTrade() {
         sideWaysCount = 0;
         return;
     }
+    if (expiryTime && !callOption && !putOption) return;
 
     if ((callOption || putOption) &&
         netPosition != 0 &&
         price < upperLimit &&
         price > lowerLimit) {
-        await settleAccount(position, price);
+        await settleAccount(basePosition, price);
+        sideWaysCount++;
         return;
     }
 
-    if (putOption && price < lowerLimit && position.free > 0) {
-        let sellAmount = floor(position.free, basePrecision);
+    if (putOption && price < lowerLimit && basePosition.free > 0) {
+        let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(price * (1 - slippage), quotePrecision);
         await immediateSell(symbol, sellAmount, sellPrice);
+        sideWaysCount++;
         return;
     }
 
@@ -375,13 +413,14 @@ async function executeTrade() {
         let buyAmount = floor(longAmount, basePrecision);
         let buyPrice = floor(price * (1 + slippage), quotePrecision);
         await immediateBuy(symbol, buyAmount, buyPrice);
+        sideWaysCount++;
         return;
     }
 
     if (callOption || putOption) return;
 
     if (profit > 0) {
-        await settleAccount(position, price);
+        await settleAccount(basePosition, price);
         await moveFundsToSpot();
         spotStrikePrice = 0;
         initialEquity = 0;
@@ -397,8 +436,8 @@ async function executeTrade() {
         sideWaysCount++;
     }
 
-    if ((price < spotStrikePrice) && (position.free > 0)) {
-        let sellAmount = floor(position.free, basePrecision);
+    if ((price < spotStrikePrice) && (basePosition.free > 0)) {
+        let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(price * (1 - slippage), quotePrecision);
         await immediateSell(symbol, sellAmount, sellPrice);
         sideWaysCount++;

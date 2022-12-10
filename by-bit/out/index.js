@@ -18,6 +18,8 @@ function floor(num, precision = quotePrecision) {
 }
 async function immediateSell(symbol, orderQty, price, coin = baseCurrency) {
     orderQty = floor(orderQty, basePrecision);
+    if (orderQty == 0)
+        return;
     while (true) {
         price = floor(price, quotePrecision);
         log(`immediate sell qty: ${orderQty} at ${price}`);
@@ -46,6 +48,8 @@ async function immediateSell(symbol, orderQty, price, coin = baseCurrency) {
 }
 async function immediateBuy(symbol, orderQty, price, quoteCoin = quoteCurrency) {
     orderQty = floor(orderQty, basePrecision);
+    if (orderQty == 0)
+        return;
     while (true) {
         price = floor(price, quotePrecision);
         log(`immediate buy qty: ${orderQty} at ${price}`);
@@ -250,7 +254,7 @@ async function executeTrade() {
     if (initialEquity == 0 && (callOption || putOption)) {
         initialEquity = calculateNetEquity(position, quotePosition, price);
         let option = callOption || putOption;
-        quantity = parseFloat(`${option === null || option === void 0 ? void 0 : option.size}`);
+        quantity = Math.abs(parseFloat(`${option === null || option === void 0 ? void 0 : option.size}`));
     }
     let borrowing = position.loan >= quantity;
     let netEquity = calculateNetEquity(position, quotePosition, price);
