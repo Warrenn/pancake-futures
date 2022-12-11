@@ -1,5 +1,5 @@
 import { setTimeout as asyncSleep } from 'timers/promises';
-import { SpotClientV3, AccountAssetClient, USDCOptionClient, UnifiedMarginClient } from "bybit-api";
+import { SpotClientV3, AccountAssetClient, WebsocketClient, UnifiedMarginClient } from "bybit-api";
 import { appendFile, writeFile } from 'fs/promises';
 import { writeFileSync } from 'fs';
 import { v4 as uuid } from 'uuid';
@@ -48,6 +48,8 @@ let
     client: SpotClientV3,
     assetsClient: AccountAssetClient,
     unifiedClient: UnifiedMarginClient,
+    wsUnified: WebsocketClient | null = null,
+    wsSpot: WebsocketClient | null = null,
     optionsNeedUpdate: boolean = false,
     positionsNeedUpdate: boolean = false,
     callSubscription: string = '',
@@ -146,6 +148,7 @@ async function borrowIfRequired(coin: string, quantity: number, precision: numbe
 
     let diff = floor(quantity - position.free, precision);
     if (diff == 0) return;
+    positionsNeedUpdate = true;
     await borrowFunds(coin, diff);
 }
 
@@ -163,6 +166,7 @@ async function getSellableAmount(coin: string, quantity: number): Promise<number
 async function borrowFunds(coin: string, quantity: number) {
     if (!!minSizes[coin] && quantity < minSizes[coin]) quantity = minSizes[coin];
     log(`borrow ${coin} ${quantity}`);
+    positionsNeedUpdate = true;
     let borrowResponse = await client.borrowCrossMarginLoan(coin, `${quantity}`);
 
     if (borrowResponse.retCode == 0) return;
@@ -557,9 +561,15 @@ async function getOptions(): Promise<{
         let optionPosition = <OptionPosition>list[c];
         let matches = optionPosition.symbol.match(checkExpression);
 
+        let entryPrice = parseFloat(optionPosition.entryPrice);
+        let size = Math.abs(parseFloat(optionPosition.size));
+        let triggerAmount = entryPrice * optionROI * size;
+        optionsTriggers[`tickers.${optionPosition.symbol}`] = triggerAmount;
+
         if (!matches) continue;
         if (parseFloat(optionPosition.size) == 0) continue;
         optionPosition.limit = parseFloat(matches[4]);
+
         if (matches[5] == 'P') putOption = optionPosition;
         if (matches[5] == 'C') callOption = optionPosition;
         if (expiry != null) continue;
@@ -600,10 +610,20 @@ async function moveFundsToSpot() {
     }
 }
 
+function closeWebSocket(socket: WebsocketClient | null) {
+    try {
+        if (socket == null) return;
+        socket.closeAll(true);
+    } catch (err) {
+        logError(`couldnt close socket: ${err}`);
+    }
+}
+
 process.stdin.on('data', process.exit.bind(process, 0));
 await writeFile('errors.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
 
 while (true) {
+
     try {
         client = new SpotClientV3({
             testnet: useTestnet,
@@ -626,6 +646,31 @@ while (true) {
             recv_window: 999999
         });
 
+        wsUnified = new WebsocketClient({
+            testnet: useTestnet,
+            key: process.env.API_KEY,
+            secret: process.env.API_SECRET,
+            market: 'unifiedOption'
+        });
+
+        wsUnified.on('update', (data) => {
+            optionsNeedUpdate = optionsNeedUpdate || (data?.topic in optionsTriggers && optionsTriggers[data.topic] < parseFloat(data.data.markPrice));
+        });
+
+        wsSpot = new WebsocketClient({
+            testnet: useTestnet,
+            key: process.env.API_KEY,
+            secret: process.env.API_SECRET,
+            market: 'spotv3'
+        });
+
+        wsSpot.on('update', (data) => {
+            if (data?.topic == 'outboundAccountInfo') positionsNeedUpdate = true;
+            if (data?.topic == `bookticker.${symbol}` && data.data?.ap) price = floor(data.data?.ap, quotePrecision);
+        });
+
+        wsSpot.subscribe(['outboundAccountInfo', `bookticker.${symbol}`]);
+
         ({ basePosition, quotePosition } = await getPositions());
         ({ callOption, putOption, expiry } = await getOptions());
 
@@ -644,37 +689,6 @@ while (true) {
         while (true) {
             //await asyncSleep(200);
 
-            if (positionsNeedUpdate) {
-                ({ basePosition, quotePosition } = await getPositions());
-                positionsNeedUpdate = false;
-            }
-
-            ({ initialEquity, quantity, spotStrikePrice, targetProfit } = calculateState({ spotStrikePrice, targetProfit, basePosition, callOption, initialEquity, price, putOption, quantity, quotePosition }));
-
-            ({ expiryTime, initialEquity, lowerLimit, quantity, sideWaysCount, spotStrikePrice, targetProfit, upperLimit } = await executeTrade({ basePosition, callOption, expiry, expiryTime, initialEquity, lowerLimit, price, putOption, quantity, quotePosition, sideWaysCount, spotStrikePrice, targetProfit, upperLimit }));
-
-            if (optionsNeedUpdate) {
-                ({ callOption, putOption, expiry } = await getOptions());
-                optionsNeedUpdate = false;
-            }
-
-            if (callOption && callSubscription == '') {
-                //subscribe
-                callSubscription = callOption.symbol;
-            }
-            if (putOption && putSubscription == '') {
-                //subscribe
-                putSubscription = putOption.symbol;
-            }
-            if (!callOption && callSubscription != '') {
-                //unsubscrive
-                callSubscription = '';
-            }
-            if (!putOption && putSubscription != '') {
-                //unsubscribe
-                putSubscription = '';
-            }
-
             currentMoment = new Date();
             if (expiryTime && currentMoment > expiryTime) {
                 spotStrikePrice = 0;
@@ -685,19 +699,47 @@ while (true) {
                 lowerLimit = 0;
                 upperLimit = 0;
 
-                let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
-                let { result: { price } } = await client.getLastTradedPrice(symbol);
-                let position = getPosition(loanAccountList, baseCurrency, basePrecision);
-                price = floor(price, quotePrecision);
-
-                await settleAccount(position, price);
+                await settleAccount(basePosition, price);
                 await moveFundsToSpot();
+            }
+
+            if (positionsNeedUpdate) {
+                ({ basePosition, quotePosition } = await getPositions());
+                positionsNeedUpdate = false;
+            }
+
+            if (optionsNeedUpdate) {
+                ({ callOption, putOption, expiry } = await getOptions());
+                optionsNeedUpdate = false;
+            }
+
+            ({ initialEquity, quantity, spotStrikePrice, targetProfit } = calculateState({ spotStrikePrice, targetProfit, basePosition, callOption, initialEquity, price, putOption, quantity, quotePosition }));
+
+            ({ expiryTime, initialEquity, lowerLimit, quantity, sideWaysCount, spotStrikePrice, targetProfit, upperLimit } = await executeTrade({ basePosition, callOption, expiry, expiryTime, initialEquity, lowerLimit, price, putOption, quantity, quotePosition, sideWaysCount, spotStrikePrice, targetProfit, upperLimit }));
+
+            if (callOption && callSubscription == '') {
+                callSubscription = callOption.symbol;
+                wsUnified.subscribe([`tickers.${callSubscription}`]);
+            }
+            if (putOption && putSubscription == '') {
+                putSubscription = putOption.symbol;
+                wsUnified.subscribe([`tickers.${putSubscription}`]);
+            }
+            if (!callOption && callSubscription != '') {
+                wsUnified.unsubscribe([`tickers.${callSubscription}`]);
+                callSubscription = '';
+            }
+            if (!putOption && putSubscription != '') {
+                wsUnified.unsubscribe([`tickers.${putSubscription}`]);
+                putSubscription = '';
             }
         }
     }
     catch (err) {
         try {
             await logError(`${err}`);
+            closeWebSocket(wsUnified);
+            closeWebSocket(wsSpot);
         } catch (lerr) {
             console.error(lerr);
         }
