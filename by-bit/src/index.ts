@@ -687,7 +687,7 @@ while (true) {
         await reconcileLoan(basePosition, quantity, price);
 
         while (true) {
-            //await asyncSleep(200);
+            await asyncSleep(100);
 
             currentMoment = new Date();
             if (expiryTime && currentMoment > expiryTime) {
