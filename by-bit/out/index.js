@@ -404,7 +404,7 @@ async function getOptions() {
         let optionPosition = list[c];
         let matches = optionPosition.symbol.match(checkExpression);
         let entryPrice = parseFloat(optionPosition.entryPrice);
-        let triggerAmount = entryPrice * optionROI;
+        let triggerAmount = entryPrice - (entryPrice * optionROI);
         optionsTriggers[`tickers.${optionPosition.symbol}`] = triggerAmount;
         if (!matches)
             continue;
@@ -492,7 +492,7 @@ while (true) {
             market: 'unifiedOption'
         });
         wsUnified.on('update', (data) => {
-            optionsNeedUpdate = optionsNeedUpdate || ((data === null || data === void 0 ? void 0 : data.topic) in optionsTriggers && optionsTriggers[data.topic] > parseFloat(data.data.markPrice));
+            optionsNeedUpdate = optionsNeedUpdate || ((data === null || data === void 0 ? void 0 : data.topic) in optionsTriggers && parseFloat(data.data.markPrice) <= optionsTriggers[data.topic]);
         });
         wsSpot = new WebsocketClient({
             testnet: useTestnet,
