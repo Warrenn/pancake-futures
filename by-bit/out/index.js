@@ -243,6 +243,8 @@ async function reconcileLoan(basePosition, quantity, price) {
         return;
     }
     let repayment = floor(basePosition.loan - quantity, basePrecision);
+    if (repayment == 0)
+        return;
     if (repayment > basePosition.free) {
         let buyAmount = repayment - basePosition.free;
         let buyPrice = floor(price * (1 + slippage), quotePrecision);
@@ -250,8 +252,8 @@ async function reconcileLoan(basePosition, quantity, price) {
     }
     while (true) {
         let { retCode, retMsg } = await client.repayCrossMarginLoan(baseCurrency, `${repayment}`);
-        if (retCode == 0)
-            break;
+        if (retCode == 0 || retCode == 12000)
+            return;
         logError(`couldn't reconcile loan:${basePosition.loan} free:${basePosition.free} quantity:${quantity} repayment:${repayment} (${retCode}) ${retMsg}`);
     }
 }
@@ -402,8 +404,7 @@ async function getOptions() {
         let optionPosition = list[c];
         let matches = optionPosition.symbol.match(checkExpression);
         let entryPrice = parseFloat(optionPosition.entryPrice);
-        let size = Math.abs(parseFloat(optionPosition.size));
-        let triggerAmount = entryPrice * optionROI * size;
+        let triggerAmount = entryPrice * optionROI;
         optionsTriggers[`tickers.${optionPosition.symbol}`] = triggerAmount;
         if (!matches)
             continue;
@@ -436,6 +437,8 @@ async function moveFundsToSpot() {
         return;
     let amount = floor(coin[0].availableBalance, quotePrecision) - 1;
     positionsNeedUpdate = true;
+    if (amount <= 0)
+        return;
     while (true) {
         var { ret_code, ret_msg } = await assetsClient.createInternalTransfer({
             amount: `${amount}`,
@@ -444,7 +447,7 @@ async function moveFundsToSpot() {
             to_account_type: "SPOT",
             transfer_id: `${uuid()}`
         });
-        if (ret_code == 0)
+        if (ret_code == 0 || ret_code == 10006 || ret_code == 90001)
             return;
         logError(`Failed to move funds to SPOT ${quoteCurrency} ${Math.abs(amount)} UNIFIED -> SPOT ${ret_code} ${ret_msg}`);
     }
@@ -489,7 +492,7 @@ while (true) {
             market: 'unifiedOption'
         });
         wsUnified.on('update', (data) => {
-            optionsNeedUpdate = optionsNeedUpdate || ((data === null || data === void 0 ? void 0 : data.topic) in optionsTriggers && optionsTriggers[data.topic] < parseFloat(data.data.markPrice));
+            optionsNeedUpdate = optionsNeedUpdate || ((data === null || data === void 0 ? void 0 : data.topic) in optionsTriggers && optionsTriggers[data.topic] > parseFloat(data.data.markPrice));
         });
         wsSpot = new WebsocketClient({
             testnet: useTestnet,
