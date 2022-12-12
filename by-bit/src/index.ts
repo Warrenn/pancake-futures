@@ -1,5 +1,5 @@
 import { setTimeout as asyncSleep } from 'timers/promises';
-import { SpotClientV3, AccountAssetClient, USDCOptionClient, UnifiedMarginClient } from "bybit-api";
+import { SpotClientV3, AccountAssetClient, WebsocketClient, UnifiedMarginClient } from "bybit-api";
 import { appendFile, writeFile } from 'fs/promises';
 import { writeFileSync } from 'fs';
 import { v4 as uuid } from 'uuid';
@@ -46,7 +46,9 @@ let spotStrikePrice: number = 0,
     expiryTime: Date | null = null,
     client: SpotClientV3,
     assetsClient: AccountAssetClient,
-    unifiedClient: UnifiedMarginClient;
+    unifiedClient: UnifiedMarginClient,
+    wsSpot: WebsocketClient,
+    wsUnified: WebsocketClient;
 
 function floor(num: number, precision: number = quotePrecision) {
     let exp = Math.pow(10, precision);
@@ -273,6 +275,7 @@ async function placeStraddle(price: number, size: number): Promise<Date | null> 
 }
 
 async function executeTrade() {
+    //todo: only if the flag is set to do this do it
     let { callOption, putOption, expiry } = await getOptions();
     if (expiryTime == null) expiryTime = expiry;
     if (lowerLimit == 0 && putOption) lowerLimit = putOption.limit;
@@ -311,6 +314,7 @@ async function executeTrade() {
     log(`f:${position.free} l:${position.loan} p:${price} q:${quantity} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime?.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
 
     if (!borrowing) {
+        //todo: fix the problem of loan not being exactly the same as quantity
         let borrowAmount = floor(quantity - position.loan, basePrecision);
         await borrowFunds(baseCurrency, borrowAmount);
 
@@ -319,6 +323,7 @@ async function executeTrade() {
         quotePosition = getPosition(loanAccountList, quoteCurrency, quotePrecision);
     }
 
+    //TODO: include a reset if sideways and call and put option still exist close them and do another straddle
     if (sideWaysCount > sidewaysLimit && !expiryTime) {
         log(`Trading sideways ${sideWaysCount}`);
 
@@ -331,6 +336,7 @@ async function executeTrade() {
         quantity = floor((tradableEquity * leverage) / ((1 + optionIM) * price), optionPrecision);
         let requiredMargin = price * quantity * optionIM;
 
+        //todo:figure out how to do this with an existing call and put to reset the position
         await settleAccount(position, price);
         await splitEquity(requiredMargin);
         expiryTime = await placeStraddle(price, quantity);
@@ -363,6 +369,7 @@ async function executeTrade() {
         return;
     }
 
+    //todo:include a sideways increment
     if (putOption && price < lowerLimit && position.free > 0) {
         let sellAmount = floor(position.free, basePrecision);
         let sellPrice = floor(price * (1 - slippage), quotePrecision);
@@ -370,6 +377,7 @@ async function executeTrade() {
         return;
     }
 
+    //TODO:include a sideways increment
     let longAmount = floor(quantity - netPosition, basePrecision);
     if (callOption && price > upperLimit && longAmount > 0) {
         let buyAmount = floor(longAmount, basePrecision);
@@ -476,7 +484,6 @@ async function getOptions(): Promise<{
 }
 
 async function moveFundsToSpot() {
-    //fix available balance running low
     let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
     if (!coin || coin.length == 0 || coin[0].availableBalance == 0) return
 
@@ -521,28 +528,45 @@ while (true) {
             recv_window: 999999
         });
 
+        wsSpot = new WebsocketClient({
+            testnet: useTestnet,
+            key: process.env.API_KEY,
+            secret: process.env.API_SECRET,
+            market: 'spotv3'
+            //market: 'unifiedOption'
+        });
+
+        wsSpot.on('update', (data) => {
+            console.log(JSON.stringify(data));
+        });
+
+        //TODO:use flag to get options and account positions with websockets
+        wsSpot.subscribe(['bookticker.ETHDAI']);//'outboundAccountInfo'`bookticker.${symbol}`,
+        //TODO:subscribe and unsubscribe to tickers
+        //wsSpot.subscribe(['tickers.ETH-9DEC22-1200-P']);
+
         while (true) {
-            //await asyncSleep(200);
-            await executeTrade();
+            await asyncSleep(200);
+            //await executeTrade();
 
-            currentMoment = new Date();
-            if (expiryTime && currentMoment > expiryTime) {
-                spotStrikePrice = 0;
-                initialEquity = 0;
-                targetProfit = 0;
-                sideWaysCount = 0;
-                expiryTime = null;
-                lowerLimit = 0;
-                upperLimit = 0;
+            // currentMoment = new Date();
+            // if (expiryTime && currentMoment > expiryTime) {
+            //     spotStrikePrice = 0;
+            //     initialEquity = 0;
+            //     targetProfit = 0;
+            //     sideWaysCount = 0;
+            //     expiryTime = null;
+            //     lowerLimit = 0;
+            //     upperLimit = 0;
 
-                let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
-                let { result: { price } } = await client.getLastTradedPrice(symbol);
-                let position = getPosition(loanAccountList, baseCurrency, basePrecision);
-                price = floor(price, quotePrecision);
+            //     let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
+            //     let { result: { price } } = await client.getLastTradedPrice(symbol);
+            //     let position = getPosition(loanAccountList, baseCurrency, basePrecision);
+            //     price = floor(price, quotePrecision);
 
-                await settleAccount(position, price);
-                await moveFundsToSpot();
-            }
+            //     await settleAccount(position, price);
+            //     await moveFundsToSpot();
+            // }
         }
     }
     catch (err) {
