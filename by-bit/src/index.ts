@@ -596,6 +596,7 @@ async function moveFundsToSpot() {
 
     let amount = floor(coin[0].availableBalance, quotePrecision) - 1;
     positionsNeedUpdate = true;
+    if (amount <= 0) return;
 
     while (true) {
         var { ret_code, ret_msg } = await assetsClient.createInternalTransfer({
@@ -605,7 +606,7 @@ async function moveFundsToSpot() {
             to_account_type: "SPOT",
             transfer_id: `${uuid()}`
         });
-        if (ret_code == 0) return;
+        if (ret_code == 0 || ret_code == 10006 || ret_code == 90001) return;
         logError(`Failed to move funds to SPOT ${quoteCurrency} ${Math.abs(amount)} UNIFIED -> SPOT ${ret_code} ${ret_msg}`);
     }
 }
