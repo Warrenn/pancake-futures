@@ -299,7 +299,7 @@ async function placeStraddle(price: number, size: number): Promise<Date | null> 
 async function getPositions(): Promise<{ basePosition: Position, quotePosition: Position }> {
     let { result: { loanAccountList } } = await client.getCrossMarginAccountInfo();
     let basePosition = getPosition(loanAccountList, baseCurrency, basePrecision);
-    let quotePosition = getPosition(loanAccountList, baseCurrency, basePrecision);
+    let quotePosition = getPosition(loanAccountList, quoteCurrency, basePrecision);
     return { basePosition, quotePosition };
 }
 
@@ -650,6 +650,7 @@ while (true) {
             testnet: useTestnet,
             key: process.env.API_KEY,
             secret: process.env.API_SECRET,
+            fetchTimeOffsetBeforeAuth: true,
             market: 'unifiedOption'
         });
 
@@ -661,6 +662,7 @@ while (true) {
             testnet: useTestnet,
             key: process.env.API_KEY,
             secret: process.env.API_SECRET,
+            fetchTimeOffsetBeforeAuth: true,
             market: 'spotv3'
         });
 
