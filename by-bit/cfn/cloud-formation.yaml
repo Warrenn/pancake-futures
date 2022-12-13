@@ -42,7 +42,7 @@ Parameters:
   LogRetention:
     Type: Number
     Description: The number of days to keep the cloudwatch logs
-    Default: 5
+    Default: 3
 
   AppPrefix:
     Type: String
@@ -184,14 +184,24 @@ Resources:
             export BYBIT_REGION="${Region}"
             export BYBIT_API_CREDENTIALS="/${EnvName}/${AppPrefix}/api-credentials"
             export BYBIT_SETTINGS="/${EnvName}/${AppPrefix}/settings"
-            export LOG_FILE="/logs/application.log"
-            export ERROR_FILE="/logs/errors.log"
             
             mkdir /logs
-            chmod 577 /logs
+            chmod 665 /logs
 
             mkdir /app
             chmod 577 /app
+
+            cat <<EOF > by-bit.conf
+              /logs/application.log {
+                rotate 1
+                daily
+                create 660 ec2-user ec2-user
+              }
+            EOF
+
+            cp by-bit.conf /etc/logrotate.d/
+            chmod 644 /etc/logrotate.d/by-bit.conf
+            chown root.root /etc/logrotate.d/by-bit.conf
 
             cat <<EOF > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent-schema.json
               {
@@ -221,7 +231,7 @@ Resources:
             aws s3 cp s3://${S3ArtifactBucket}/${AppPrefix}/${AppPrefix}-application.zip /app/${AppPrefix}-application.zip --region ${Region}
             unzip /app/${AppPrefix}-application.zip -d /app
             npm install 
-            node index.js
+            node index.js > /logs/application.log 2>&1
 
   ApplicationLog:
     Type: AWS::Logs::LogGroup

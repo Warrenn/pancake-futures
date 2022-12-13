@@ -1,8 +1,6 @@
 var _a, _b;
 import { setTimeout as asyncSleep } from 'timers/promises';
 import { SpotClientV3, AccountAssetClient, WebsocketClient, UnifiedMarginClient } from "bybit-api";
-import { appendFile, writeFile } from 'fs/promises';
-import { writeFileSync } from 'fs';
 import { v4 as uuid } from 'uuid';
 import AWS from 'aws-sdk';
 import dotenv from "dotenv";
@@ -12,7 +10,7 @@ const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "
     NEAR: 1,
     USDT: 10,
     USDC: 10
-}, credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`, settingsKey = `${process.env.BYBIT_SETTINGS}`, region = `${process.env.BYBIT_REGION}`, logFile = `${process.env.LOG_FILE}`, errorFile = `${process.env.ERROR_FILE}`;
+}, credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`, settingsKey = `${process.env.BYBIT_SETTINGS}`, region = `${process.env.BYBIT_REGION}`;
 let slippage = 0, symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, tradeMargin = 0, optionPrecision = 0, quotePrecision = 0, basePrecision = 0, sidewaysLimit = 0, optionIM = 0, logFrequency = 0, targetROI = 0, optionROI = 0, useTestnet = false, leverage = 0;
 let spotStrikePrice = 0, initialEquity = 0, targetProfit = 0, sideWaysCount = 0, quantity = 0, currentMoment, expiryTime = null, client, assetsClient, unifiedClient, wsUnified = null, wsSpot = null, optionsNeedUpdate = false, positionsNeedUpdate = false, callSubscription = '', putSubscription = '', optionsTriggers = {}, callOption = null, putOption = null, basePosition, quotePosition, expiry = null, price, logCount = 0, ssm = null;
 function floor(num, precision = quotePrecision) {
@@ -115,14 +113,12 @@ async function borrowFunds(coin, quantity) {
         return;
     await logError(`borrowFunds ${borrowResponse.retMsg}`);
 }
-function log(message) {
+async function log(message) {
     let logLine = `${(new Date()).toISOString()} ${message}`;
     console.log(logLine);
-    writeFileSync(logFile, logLine, 'utf-8');
 }
 async function consoleAndFile(message) {
     console.error(message);
-    await appendFile(errorFile, message + '\r\n', 'utf-8');
 }
 async function logError(message) {
     await consoleAndFile((new Date()).toISOString());
@@ -287,6 +283,7 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
     }
     else
         logCount++;
+    return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount };
     if (sideWaysCount > sidewaysLimit) {
         log(`Trading sideways ${sideWaysCount}`);
         await settleOption(putOption, true);
@@ -458,7 +455,6 @@ function closeWebSocket(socket) {
     }
 }
 process.stdin.on('data', process.exit.bind(process, 0));
-await writeFile(errorFile, `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
 ssm = new AWS.SSM({ region });
 let authenticationParameter = await ssm.getParameter({ Name: credentialsKey, WithDecryption: true }).promise();
 const { key, secret } = JSON.parse(`${(_a = authenticationParameter.Parameter) === null || _a === void 0 ? void 0 : _a.Value}`);

@@ -1,7 +1,5 @@
 import { setTimeout as asyncSleep } from 'timers/promises';
 import { SpotClientV3, AccountAssetClient, WebsocketClient, UnifiedMarginClient } from "bybit-api";
-import { appendFile, writeFile } from 'fs/promises';
-import { appendFileSync, writeFileSync } from 'fs';
 import { v4 as uuid } from 'uuid';
 import AWS from 'aws-sdk';
 import dotenv from "dotenv";
@@ -21,9 +19,7 @@ const
     },
     credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`,
     settingsKey = `${process.env.BYBIT_SETTINGS}`,
-    region = `${process.env.BYBIT_REGION}`,
-    logFile = `${process.env.LOG_FILE}`,
-    errorFile = `${process.env.ERROR_FILE}`;
+    region = `${process.env.BYBIT_REGION}`;
 
 let
     slippage: number = 0,
@@ -183,13 +179,10 @@ async function borrowFunds(coin: string, quantity: number) {
 async function log(message: string) {
     let logLine = `${(new Date()).toISOString()} ${message}`;
     console.log(logLine);
-    if (logCount % logFrequency == 0) { await writeFile(logFile, logLine, 'utf-8'); return; }
-    await appendFile(logFile, logLine + '\r\n', 'utf-8');
 }
 
 async function consoleAndFile(message: string) {
     console.error(message);
-    await appendFile(errorFile, message + '\r\n', 'utf-8');
 }
 
 async function logError(message: string) {
@@ -417,7 +410,7 @@ async function executeTrade({
     let profit = netEquity - initialEquity - targetProfit;
 
     if ((logCount % logFrequency) == 0) {
-        log(`f:${basePosition.free} l:${basePosition.loan} p:${price} q:${quantity} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime?.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
+        log(`f:${basePosition.free} l:${basePosition.loan} bp:${price} q:${quantity} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime?.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
         logCount = 1;
     }
     else logCount++;
@@ -618,7 +611,6 @@ function closeWebSocket(socket: WebsocketClient | null) {
 }
 
 process.stdin.on('data', process.exit.bind(process, 0));
-await writeFile(errorFile, `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
 ssm = new AWS.SSM({ region });
 
 let authenticationParameter = await ssm.getParameter({ Name: credentialsKey, WithDecryption: true }).promise();

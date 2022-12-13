@@ -7,6 +7,7 @@ param (
 )
 
 if ($Redeploy) {
+    & tsc --build ./tsconfig.json
     Get-ChildItem -Path .\package.json, .\package-lock.json, .\out, .\src |
     Compress-Archive -DestinationPath .\by-bit-application.zip -CompressionLevel Optimal -Force
     aws s3 cp .\by-bit-application.zip s3://secure-artifacts-93648082bbed41458cac8d7814803d3c/by-bit/by-bit-application.zip --profile $AwsProfile --region $Region
