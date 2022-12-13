@@ -299,7 +299,6 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         await settleAccount(basePosition, price);
         await splitEquity(requiredMargin - availiableUnified);
         expiryTime = await placeStraddle(price, quantity);
-        ;
         await reconcileLoan(basePosition, quantity, price);
         positionsNeedUpdate = true;
         optionsNeedUpdate = true;
@@ -307,10 +306,6 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         sideWaysCount = 0;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount };
     }
-    if (await settleOption(putOption))
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount };
-    if (await settleOption(callOption))
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount };
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
     if (expiryTime && !callOption && !putOption && netPosition != 0) {
         await settleAccount(basePosition, price);

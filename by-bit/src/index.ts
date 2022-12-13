@@ -442,9 +442,6 @@ async function executeTrade({
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount };
     }
 
-    if (await settleOption(putOption)) return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount };
-    if (await settleOption(callOption)) return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount };
-
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
 
     if (expiryTime && !callOption && !putOption && netPosition != 0) {
