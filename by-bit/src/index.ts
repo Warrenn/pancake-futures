@@ -458,7 +458,6 @@ async function executeTrade({
     }
     if (expiryTime && !callOption && !putOption) return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount };
 
-    //todo this needs to be fixed
     if ((callOption || putOption) &&
         netPosition != 0 &&
         price < upperLimit &&
@@ -584,7 +583,6 @@ async function getOptions(): Promise<{
 }
 
 async function moveFundsToSpot() {
-    //fix available balance running low
     let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
     if (!coin || coin.length == 0 || coin[0].availableBalance == 0) return
 
