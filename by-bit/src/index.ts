@@ -22,7 +22,6 @@ const
     sidewaysLimit = parseInt(`${process.env.SIDEWAYS_LIMIT}`),
     optionIM = parseFloat(`${process.env.OPTION_IM}`),
     authKey = `${process.env.AUTHPARAMKEY}`,
-    tradeDataKey = `${process.env.TRADEDATAKEY}`,
     targetROI = parseFloat(`${process.env.TARGET_ROI}`),
     optionROI = parseFloat(`${process.env.OPTION_ROI}`),
     useTestnet = !!(process.env.TESTNET?.localeCompare("false", 'en', { sensitivity: 'accent' })),
@@ -60,7 +59,8 @@ let
     basePosition: Position,
     quotePosition: Position,
     expiry: Date | null = null,
-    price: number;
+    price: number,
+    logCount: number = 0;
 
 
 function floor(num: number, precision: number = quotePrecision) {
@@ -246,7 +246,11 @@ async function settleOption(optionPosition: OptionPosition | null, force: boolea
     }
 }
 
-async function placeStraddle(price: number, size: number): Promise<Date | null> {
+async function placeStraddle(price: number, size: number): Promise<{
+    expiryTime: Date | null,
+    lowerLimit: number,
+    upperLimit: number
+}> {
     let contractPrice = Math.floor(price / 25) * 25;
     let lowerLimit = (price % 25) < 12.5 ? contractPrice - 25 : contractPrice;
     let upperLimit = lowerLimit + 50;
@@ -265,35 +269,30 @@ async function placeStraddle(price: number, size: number): Promise<Date | null> 
     let callSymbol = `${baseCurrency}-${expiryTime.getUTCDate()}${months[expiryTime.getUTCMonth()]}${yearStr}-${upperLimit}-C`;
 
     log(`Placing straddle price:${price} size:${size} put:${putSymbol} call:${callSymbol}`);
-    while (true) {
-        var { retCode, retMsg } = await unifiedClient.submitOrder({
-            category: 'option',
-            orderType: 'Market',
-            side: 'Sell',
-            qty: `${size}`,
-            symbol: putSymbol,
-            timeInForce: 'ImmediateOrCancel',
-            orderLinkId: `${uuid()}`
-        });
-        if (retCode == 0) break;
-        logError(`put order failed ${putSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
-    }
+    var { retCode, retMsg } = await unifiedClient.submitOrder({
+        category: 'option',
+        orderType: 'Market',
+        side: 'Sell',
+        qty: `${size}`,
+        symbol: putSymbol,
+        timeInForce: 'ImmediateOrCancel',
+        orderLinkId: `${uuid()}`
+    });
+    if (retCode != 0) logError(`put order failed ${putSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
 
-    while (true) {
-        var { retCode, retMsg } = await unifiedClient.submitOrder({
-            category: 'option',
-            orderType: 'Market',
-            qty: `${size}`,
-            side: 'Sell',
-            symbol: callSymbol,
-            timeInForce: 'ImmediateOrCancel',
-            orderLinkId: `${uuid()}`
-        });
-        if (retCode == 0) break;
-        logError(`call order failed ${callSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
-    }
+    var { retCode, retMsg } = await unifiedClient.submitOrder({
+        category: 'option',
+        orderType: 'Market',
+        qty: `${size}`,
+        side: 'Sell',
+        symbol: callSymbol,
+        timeInForce: 'ImmediateOrCancel',
+        orderLinkId: `${uuid()}`
+    });
+    if (retCode != 0) logError(`call order failed ${callSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
+
     optionsNeedUpdate = true;
-    return expiryTime;
+    return { expiryTime, lowerLimit, upperLimit };
 }
 
 async function getPositions(): Promise<{ basePosition: Position, quotePosition: Position }> {
@@ -416,7 +415,11 @@ async function executeTrade({
     let netEquity = calculateNetEquity(basePosition, quotePosition, price);
     let profit = netEquity - initialEquity - targetProfit;
 
-    log(`f:${basePosition.free} l:${basePosition.loan} p:${price} q:${quantity} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime?.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
+    if ((logCount % 10) == 0) {
+        log(`f:${basePosition.free} l:${basePosition.loan} p:${price} q:${quantity} skp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime?.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
+        logCount = 0;
+    }
+    else logCount++;
 
     if (sideWaysCount > sidewaysLimit) {
         log(`Trading sideways ${sideWaysCount}`);
@@ -435,12 +438,14 @@ async function executeTrade({
 
         await settleAccount(basePosition, price);
         await splitEquity(requiredMargin);
-        expiryTime = await placeStraddle(price, quantity);
+        ({ expiryTime, lowerLimit, upperLimit } = await placeStraddle(price, quantity));
         await reconcileLoan(basePosition, quantity, price);
 
         positionsNeedUpdate = true;
+        optionsNeedUpdate = true;
         spotStrikePrice = 0;
         sideWaysCount = 0;
+
         return { expiryTime, lowerLimit, upperLimit, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount };
     }
 
@@ -520,30 +525,25 @@ async function splitEquity(unifiedAmount: number) {
     positionsNeedUpdate = true;
 
     if (unifiedAmount > 0) {
-        while (true) {
-            var { ret_code, ret_msg } = await assetsClient.createInternalTransfer({
-                amount: `${unifiedAmount}`,
-                coin: quoteCurrency,
-                from_account_type: "SPOT",
-                to_account_type: "UNIFIED",
-                transfer_id: `${uuid()}`
-            });
-            if (ret_code == 0) return;
-            logError(`Failed to split Equity ${quoteCurrency} ${unifiedAmount} SPOT -> UNIFIED ${ret_msg}`);
-        }
-    }
-
-    while (true) {
         var { ret_code, ret_msg } = await assetsClient.createInternalTransfer({
-            amount: `${Math.abs(unifiedAmount)}`,
+            amount: `${unifiedAmount}`,
             coin: quoteCurrency,
-            from_account_type: "UNIFIED",
-            to_account_type: "SPOT",
+            from_account_type: "SPOT",
+            to_account_type: "UNIFIED",
             transfer_id: `${uuid()}`
         });
-        if (ret_code == 0) return;
-        logError(`Failed to split Equity ${quoteCurrency} ${Math.abs(unifiedAmount)} UNIFIED -> SPOT ${ret_msg}`);
+        if (ret_code != 0) logError(`Failed to split Equity ${quoteCurrency} ${unifiedAmount} (${ret_code}) SPOT -> UNIFIED ${ret_msg}`);
+        return
     }
+
+    var { ret_code, ret_msg } = await assetsClient.createInternalTransfer({
+        amount: `${Math.abs(unifiedAmount)}`,
+        coin: quoteCurrency,
+        from_account_type: "UNIFIED",
+        to_account_type: "SPOT",
+        transfer_id: `${uuid()}`
+    });
+    if (ret_code != 0) logError(`Failed to split Equity ${quoteCurrency} ${Math.abs(unifiedAmount)} (${ret_code}) UNIFIED -> SPOT ${ret_msg}`);
 }
 
 async function getOptions(): Promise<{
@@ -676,6 +676,8 @@ while (true) {
 
         ({ basePosition, quotePosition } = await getPositions());
         ({ callOption, putOption, expiry } = await getOptions());
+        lowerLimit = putOption == null ? 0 : putOption.limit;
+        upperLimit = callOption == null ? 0 : callOption.limit;
 
         while (true) {
             var { result: { price: p }, retCode, retMsg } = await client.getLastTradedPrice(symbol);
@@ -713,6 +715,8 @@ while (true) {
 
             if (optionsNeedUpdate) {
                 ({ callOption, putOption, expiry } = await getOptions());
+                lowerLimit = putOption == null ? 0 : putOption.limit;
+                upperLimit = callOption == null ? 0 : callOption.limit;
                 optionsNeedUpdate = false;
             }
 
