@@ -1,7 +1,7 @@
 import { setTimeout as asyncSleep } from 'timers/promises';
 import { SpotClientV3, AccountAssetClient, WebsocketClient, UnifiedMarginClient } from "bybit-api";
 import { appendFile, writeFile } from 'fs/promises';
-import { writeFileSync } from 'fs';
+import { appendFileSync, writeFileSync } from 'fs';
 import { v4 as uuid } from 'uuid';
 import AWS from 'aws-sdk';
 import dotenv from "dotenv";
@@ -183,7 +183,8 @@ async function borrowFunds(coin: string, quantity: number) {
 function log(message: string) {
     let logLine = `${(new Date()).toISOString()} ${message}`;
     console.log(logLine);
-    writeFileSync(logFile, logLine, 'utf-8');
+    if (logCount % logFrequency == 0) { writeFileSync(logFile, logLine, 'utf-8'); return; }
+    appendFileSync(logFile, logLine + '\r\n', 'utf-8');
 }
 
 async function consoleAndFile(message: string) {

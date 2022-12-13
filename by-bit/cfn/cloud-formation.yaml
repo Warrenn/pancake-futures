@@ -42,7 +42,7 @@ Parameters:
   LogRetention:
     Type: Number
     Description: The number of days to keep the cloudwatch logs
-    Default: 30
+    Default: 5
 
   AppPrefix:
     Type: String
@@ -225,6 +225,8 @@ Resources:
 
   ApplicationLog:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       LogGroupName: !Sub "${AppPrefix}-application"
       RetentionInDays: !Ref LogRetention
