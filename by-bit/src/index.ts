@@ -431,7 +431,7 @@ async function executeTrade({
 
         await settleAccount(basePosition, price);
         await splitEquity(requiredMargin - availiableUnified);
-        expiryTime = await placeStraddle(price, quantity));
+        expiryTime = await placeStraddle(price, quantity);
         await reconcileLoan(basePosition, quantity, price);
 
         positionsNeedUpdate = true;
