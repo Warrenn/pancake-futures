@@ -179,12 +179,13 @@ Resources:
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
             [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
 
-            nvm install 18.7.0
+            nvm install 16
 
             export BYBIT_REGION="${Region}"
             export BYBIT_API_CREDENTIALS="/${EnvName}/${AppPrefix}/api-credentials"
             export BYBIT_SETTINGS="/${EnvName}/${AppPrefix}/settings"
-            export BYBIT_LOG_GROUP="${ApplicationLog}"
+            export LOG_FILE="/logs/application.log"
+            export ERROR_FILE="/logs/errors.log"
             
             mkdir /logs
             chmod 577 /logs
@@ -203,7 +204,7 @@ Resources:
                       "collect_list": [
                         {
                           "file_path": "/logs/*",
-                          "log_group_name": "${InstanceLog}",
+                          "log_group_name": "${AppPrefix}-application",
                           "log_stream_name": "{instance_id}"
                         }                      
                       ]
@@ -220,7 +221,7 @@ Resources:
             aws s3 cp s3://${S3ArtifactBucket}/${AppPrefix}/${AppPrefix}-application.zip /app/${AppPrefix}-application.zip --region ${Region}
             unzip /app/${AppPrefix}-application.zip -d /app
             npm install 
-            node index.js >> /logs/application.log
+            node index.js
 
   ApplicationLog:
     Type: AWS::Logs::LogGroup

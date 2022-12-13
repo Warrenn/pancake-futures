@@ -2,7 +2,7 @@ param (
     [String]
     $VpcId = "",
     [String]
-    $AwsProfile = "busyweb-admin-role",
+    $AwsProfile = "busyweb-admin",
     [String]
     $Region = "af-south-1"
 )
@@ -22,7 +22,7 @@ if ([string]::IsNullOrEmpty($VpcId)) {
 $SubnetId = $(aws ec2 describe-subnets --filters Name=vpc-id,Values=$VpcId --query "Subnets[0].SubnetId" --region $Region --profile $AwsProfile)
 
 aws cloudformation deploy `
-    --template-file .\cloud-formation.yaml `
+    --template-file .\cfn\cloud-formation.yaml `
     --stack-name "by-bit-stack" `
     --profile $AwsProfile `
     --region $Region `
