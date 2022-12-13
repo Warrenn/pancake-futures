@@ -180,11 +180,11 @@ async function borrowFunds(coin: string, quantity: number) {
     await logError(`borrowFunds ${borrowResponse.retMsg}`);
 }
 
-function log(message: string) {
+async function log(message: string) {
     let logLine = `${(new Date()).toISOString()} ${message}`;
     console.log(logLine);
-    if (logCount % logFrequency == 0) { writeFileSync(logFile, logLine, 'utf-8'); return; }
-    appendFileSync(logFile, logLine + '\r\n', 'utf-8');
+    if (logCount % logFrequency == 0) { await writeFile(logFile, logLine, 'utf-8'); return; }
+    await appendFile(logFile, logLine + '\r\n', 'utf-8');
 }
 
 async function consoleAndFile(message: string) {
