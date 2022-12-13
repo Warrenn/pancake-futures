@@ -3,38 +3,45 @@ import { SpotClientV3, AccountAssetClient, WebsocketClient, UnifiedMarginClient 
 import { appendFile, writeFile } from 'fs/promises';
 import { writeFileSync } from 'fs';
 import { v4 as uuid } from 'uuid';
+import AWS from 'aws-sdk';
 import dotenv from "dotenv";
 
 type Position = { free: number, loan: number, tokenId: string };
 type OptionPosition = { symbol: string, markPrice: string, unrealisedPnl: string, entryPrice: string, size: string, limit: number };
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const
-    slippage = parseFloat(`${process.env.SLIPPAGE}`),
-    symbol = `${process.env.BASE}${process.env.QUOTE}`,
-    baseCurrency = `${process.env.BASE}`,
-    quoteCurrency = `${process.env.QUOTE}`,
-    optionInterval = parseFloat(`${process.env.OPTION_INTERVAL}`),
-    tradeMargin = parseFloat(`${process.env.TRADE_MARGIN}`),
-    optionPrecision = parseInt(`${process.env.OPTION_PRECISION}`),
-    quotePrecision = parseInt(`${process.env.QUOTE_PRECISION}`),
-    basePrecision = parseInt(`${process.env.BASE_PRECISION}`),
-    sidewaysLimit = parseInt(`${process.env.SIDEWAYS_LIMIT}`),
-    optionIM = parseFloat(`${process.env.OPTION_IM}`),
-    logFrequency = parseInt(`${process.env.LOG_FREQUENCY}`),
-    authKey = `${process.env.AUTHPARAMKEY}`,
-    targetROI = parseFloat(`${process.env.TARGET_ROI}`),
-    optionROI = parseFloat(`${process.env.OPTION_ROI}`),
-    useTestnet = !!(process.env.TESTNET?.localeCompare("false", 'en', { sensitivity: 'accent' })),
-    leverage = parseInt(`${process.env.LEVERAGE}`),
     months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"],
     minSizes: { [id: string]: number } = {
         ETH: 0.08,
         NEAR: 1,
         USDT: 10,
         USDC: 10
-    };
+    },
+    credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`,
+    settingsKey = `${process.env.BYBIT_SETTINGS}`,
+    region = `${process.env.BYBIT_REGION}`,
+    logFile = `${process.env.LOG_FILE}`,
+    errorFile = `${process.env.ERROR_FILE}`;
+
+let
+    slippage: number = 0,
+    symbol: string = '',
+    baseCurrency: string = '',
+    quoteCurrency: string = '',
+    optionInterval: number = 0,
+    tradeMargin: number = 0,
+    optionPrecision: number = 0,
+    quotePrecision: number = 0,
+    basePrecision: number = 0,
+    sidewaysLimit: number = 0,
+    optionIM: number = 0,
+    logFrequency: number = 0,
+    targetROI: number = 0,
+    optionROI: number = 0,
+    useTestnet: boolean = false,
+    leverage: number = 0;
 
 let
     spotStrikePrice: number = 0,
@@ -60,8 +67,8 @@ let
     quotePosition: Position,
     expiry: Date | null = null,
     price: number,
-    logCount: number = 0;
-
+    logCount: number = 0,
+    ssm: AWS.SSM | null = null;
 
 function floor(num: number, precision: number = quotePrecision) {
     let exp = Math.pow(10, precision);
@@ -176,12 +183,12 @@ async function borrowFunds(coin: string, quantity: number) {
 function log(message: string) {
     let logLine = `${(new Date()).toISOString()} ${message}`;
     console.log(logLine);
-    writeFileSync('logs.log', logLine, 'utf-8');
+    writeFileSync(logFile, logLine, 'utf-8');
 }
 
 async function consoleAndFile(message: string) {
     console.error(message);
-    await appendFile('errors.log', message + '\r\n', 'utf-8');
+    await appendFile(errorFile, message + '\r\n', 'utf-8');
 }
 
 async function logError(message: string) {
@@ -610,36 +617,49 @@ function closeWebSocket(socket: WebsocketClient | null) {
 }
 
 process.stdin.on('data', process.exit.bind(process, 0));
-await writeFile('errors.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
+await writeFile(errorFile, `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
+ssm = new AWS.SSM({ region });
+
+let authenticationParameter = await ssm.getParameter({ Name: credentialsKey, WithDecryption: true }).promise();
+const { key, secret } = JSON.parse(`${authenticationParameter.Parameter?.Value}`);
+
+let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
+({
+    slippage, baseCurrency, quoteCurrency, optionInterval, leverage,
+    tradeMargin, optionPrecision, quotePrecision, basePrecision,
+    sidewaysLimit, optionIM, logFrequency, targetROI, optionROI, useTestnet
+} = JSON.parse(`${settingsParameter.Parameter?.Value}`));
+
+symbol = `${baseCurrency}${quoteCurrency}`;
 
 while (true) {
 
     try {
         client = new SpotClientV3({
             testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
+            key: key,
+            secret: secret,
             recv_window: 999999
         });
 
         assetsClient = new AccountAssetClient({
             testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
+            key: key,
+            secret: secret,
             recv_window: 999999
         });
 
         unifiedClient = new UnifiedMarginClient({
             testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
+            key: key,
+            secret: secret,
             recv_window: 999999
         });
 
         wsUnified = new WebsocketClient({
             testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
+            key: key,
+            secret: secret,
             fetchTimeOffsetBeforeAuth: true,
             market: 'unifiedOption'
         });
@@ -650,8 +670,8 @@ while (true) {
 
         wsSpot = new WebsocketClient({
             testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
+            key: key,
+            secret: secret,
             fetchTimeOffsetBeforeAuth: true,
             market: 'spotv3'
         });

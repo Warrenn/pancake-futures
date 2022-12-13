@@ -1,18 +1,20 @@
-var _a;
+var _a, _b;
 import { setTimeout as asyncSleep } from 'timers/promises';
 import { SpotClientV3, AccountAssetClient, WebsocketClient, UnifiedMarginClient } from "bybit-api";
 import { appendFile, writeFile } from 'fs/promises';
 import { writeFileSync } from 'fs';
 import { v4 as uuid } from 'uuid';
+import AWS from 'aws-sdk';
 import dotenv from "dotenv";
-dotenv.config();
-const slippage = parseFloat(`${process.env.SLIPPAGE}`), symbol = `${process.env.BASE}${process.env.QUOTE}`, baseCurrency = `${process.env.BASE}`, quoteCurrency = `${process.env.QUOTE}`, optionInterval = parseFloat(`${process.env.OPTION_INTERVAL}`), tradeMargin = parseFloat(`${process.env.TRADE_MARGIN}`), optionPrecision = parseInt(`${process.env.OPTION_PRECISION}`), quotePrecision = parseInt(`${process.env.QUOTE_PRECISION}`), basePrecision = parseInt(`${process.env.BASE_PRECISION}`), sidewaysLimit = parseInt(`${process.env.SIDEWAYS_LIMIT}`), optionIM = parseFloat(`${process.env.OPTION_IM}`), logFrequency = parseInt(`${process.env.LOG_FREQUENCY}`), authKey = `${process.env.AUTHPARAMKEY}`, targetROI = parseFloat(`${process.env.TARGET_ROI}`), optionROI = parseFloat(`${process.env.OPTION_ROI}`), useTestnet = !!((_a = process.env.TESTNET) === null || _a === void 0 ? void 0 : _a.localeCompare("false", 'en', { sensitivity: 'accent' })), leverage = parseInt(`${process.env.LEVERAGE}`), months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], minSizes = {
+dotenv.config({ override: true });
+const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], minSizes = {
     ETH: 0.08,
     NEAR: 1,
     USDT: 10,
     USDC: 10
-};
-let spotStrikePrice = 0, initialEquity = 0, targetProfit = 0, sideWaysCount = 0, quantity = 0, currentMoment, expiryTime = null, client, assetsClient, unifiedClient, wsUnified = null, wsSpot = null, optionsNeedUpdate = false, positionsNeedUpdate = false, callSubscription = '', putSubscription = '', optionsTriggers = {}, callOption = null, putOption = null, basePosition, quotePosition, expiry = null, price, logCount = 0;
+}, credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`, settingsKey = `${process.env.BYBIT_SETTINGS}`, region = `${process.env.BYBIT_REGION}`, logFile = `${process.env.LOG_FILE}`, errorFile = `${process.env.ERROR_FILE}`;
+let slippage = 0, symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, tradeMargin = 0, optionPrecision = 0, quotePrecision = 0, basePrecision = 0, sidewaysLimit = 0, optionIM = 0, logFrequency = 0, targetROI = 0, optionROI = 0, useTestnet = false, leverage = 0;
+let spotStrikePrice = 0, initialEquity = 0, targetProfit = 0, sideWaysCount = 0, quantity = 0, currentMoment, expiryTime = null, client, assetsClient, unifiedClient, wsUnified = null, wsSpot = null, optionsNeedUpdate = false, positionsNeedUpdate = false, callSubscription = '', putSubscription = '', optionsTriggers = {}, callOption = null, putOption = null, basePosition, quotePosition, expiry = null, price, logCount = 0, ssm = null;
 function floor(num, precision = quotePrecision) {
     let exp = Math.pow(10, precision);
     return Math.floor((+num * exp)) / exp;
@@ -116,11 +118,11 @@ async function borrowFunds(coin, quantity) {
 function log(message) {
     let logLine = `${(new Date()).toISOString()} ${message}`;
     console.log(logLine);
-    writeFileSync('logs.log', logLine, 'utf-8');
+    writeFileSync(logFile, logLine, 'utf-8');
 }
 async function consoleAndFile(message) {
     console.error(message);
-    await appendFile('errors.log', message + '\r\n', 'utf-8');
+    await appendFile(errorFile, message + '\r\n', 'utf-8');
 }
 async function logError(message) {
     await consoleAndFile((new Date()).toISOString());
@@ -456,31 +458,41 @@ function closeWebSocket(socket) {
     }
 }
 process.stdin.on('data', process.exit.bind(process, 0));
-await writeFile('errors.log', `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
+await writeFile(errorFile, `Starting session ${(new Date()).toUTCString()}\r\n`, 'utf-8');
+ssm = new AWS.SSM({ region });
+let authenticationParameter = await ssm.getParameter({ Name: credentialsKey, WithDecryption: true }).promise();
+const { key, secret } = JSON.parse(`${(_a = authenticationParameter.Parameter) === null || _a === void 0 ? void 0 : _a.Value}`);
+let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
+({
+    slippage, baseCurrency, quoteCurrency, optionInterval, leverage,
+    tradeMargin, optionPrecision, quotePrecision, basePrecision,
+    sidewaysLimit, optionIM, logFrequency, targetROI, optionROI, useTestnet
+} = JSON.parse(`${(_b = settingsParameter.Parameter) === null || _b === void 0 ? void 0 : _b.Value}`));
+symbol = `${baseCurrency}${quoteCurrency}`;
 while (true) {
     try {
         client = new SpotClientV3({
             testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
+            key: key,
+            secret: secret,
             recv_window: 999999
         });
         assetsClient = new AccountAssetClient({
             testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
+            key: key,
+            secret: secret,
             recv_window: 999999
         });
         unifiedClient = new UnifiedMarginClient({
             testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
+            key: key,
+            secret: secret,
             recv_window: 999999
         });
         wsUnified = new WebsocketClient({
             testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
+            key: key,
+            secret: secret,
             fetchTimeOffsetBeforeAuth: true,
             market: 'unifiedOption'
         });
@@ -489,8 +501,8 @@ while (true) {
         });
         wsSpot = new WebsocketClient({
             testnet: useTestnet,
-            key: process.env.API_KEY,
-            secret: process.env.API_SECRET,
+            key: key,
+            secret: secret,
             fetchTimeOffsetBeforeAuth: true,
             market: 'spotv3'
         });

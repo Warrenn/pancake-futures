@@ -10,6 +10,12 @@
             "name": "Launch Program",
             "program": "${workspaceFolder}/src/index.ts",
             "preLaunchTask": "tsc: build - tsconfig.json",
+            "env": {
+                "AWS_PROFILE": "busyweb-admin",
+                "AWS_SDK_LOAD_CONFIG": "true",
+                "AWS_ACCESS_KEY_ID": "",
+                "AWS_SECRET_ACCESS_KEY": ""
+            },
             "outFiles": [
                 "${workspaceFolder}/out/**/*.js"
             ],
