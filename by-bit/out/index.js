@@ -285,27 +285,29 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
     }
     else
         logCount++;
-    // if (sideWaysCount > sidewaysLimit) {
-    //     log(`Trading sideways ${sideWaysCount}`);
-    //     await settleOption(putOption, true);
-    //     await settleOption(callOption, true);
-    //     let spotEquity = calculateNetEquity(basePosition, quotePosition, price);
-    //     let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
-    //     let availiableUnified = (!coin || coin.length == 0) ? 0 : floor(coin[0].availableBalance, quotePrecision);
-    //     let equity = (spotEquity + availiableUnified)
-    //     let tradableEquity = equity * tradeMargin;
-    //     quantity = floor((tradableEquity * leverage) / ((1 + optionIM) * price), optionPrecision);
-    //     let requiredMargin = price * quantity * optionIM;
-    //     await settleAccount(basePosition, price);
-    //     await splitEquity(requiredMargin - availiableUnified);
-    //     expiryTime = await placeStraddle(price, quantity);
-    //     await reconcileLoan(basePosition, quantity, price);
-    //     positionsNeedUpdate = true;
-    //     optionsNeedUpdate = true;
-    //     spotStrikePrice = 0;
-    //     sideWaysCount = 0;
-    //     return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount };
-    // }
+    if (sideWaysCount > sidewaysLimit) {
+        log(`Trading sideways ${sideWaysCount}`);
+        await settleOption(putOption, true);
+        await settleOption(callOption, true);
+        let spotEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
+        let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
+        let availiableUnified = (!coin || coin.length == 0) ? 0 : floor(coin[0].availableBalance, quotePrecision);
+        let equity = (spotEquity + availiableUnified);
+        let tradableEquity = equity * tradeMargin;
+        quantity = floor((tradableEquity * leverage) / ((1 + optionIM) * bidPrice), optionPrecision);
+        let requiredMargin = bidPrice * quantity * optionIM;
+        await settleAccount(basePosition, bidPrice);
+        await splitEquity(requiredMargin - availiableUnified);
+        expiryTime = await placeStraddle(bidPrice, quantity);
+        await reconcileLoan(basePosition, quantity, bidPrice);
+        askAboveStrike = false;
+        bidBelowStrike = false;
+        positionsNeedUpdate = true;
+        optionsNeedUpdate = true;
+        spotStrikePrice = 0;
+        sideWaysCount = 0;
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+    }
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
     if (expiryTime && !callOption && !putOption && netPosition != 0) {
         await settleAccount(basePosition, askPrice);
