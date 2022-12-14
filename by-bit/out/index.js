@@ -285,10 +285,8 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
     }
     else
         logCount++;
-    if (sideWaysCount > sidewaysLimit) {
+    if (sideWaysCount > sidewaysLimit && !expiryTime) {
         log(`Trading sideways ${sideWaysCount}`);
-        await settleOption(putOption, true);
-        await settleOption(callOption, true);
         let spotEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
         let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
         let availiableUnified = (!coin || coin.length == 0) ? 0 : floor(coin[0].availableBalance, quotePrecision);
@@ -338,7 +336,6 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
             spotStrikePrice = lowerLimit;
             bidBelowStrike = true;
         }
-        sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
     }
     if (putOption && bidPrice < lowerLimit && basePosition.free > 0) {
@@ -347,7 +344,6 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         spotStrikePrice = lowerLimit;
         askAboveStrike = true;
         await immediateSell(symbol, sellAmount, sellPrice);
-        sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
     }
     let longAmount = floor(quantity - netPosition, basePrecision);
@@ -357,7 +353,6 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         spotStrikePrice = upperLimit;
         bidBelowStrike = true;
         await immediateBuy(symbol, buyAmount, buyPrice);
-        sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
     }
     if (callOption || putOption)
