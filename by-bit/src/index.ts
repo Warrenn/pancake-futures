@@ -14,8 +14,10 @@ const
     minSizes: { [id: string]: number } = {
         ETH: 0.08,
         NEAR: 1,
-        USDT: 10,
-        USDC: 10
+        USDT: 10
+        USDC: 10,
+        ETHUSDC: 0.0065,
+        ETHUSDT: 0.0065
     },
     credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`,
     settingsKey = `${process.env.BYBIT_SETTINGS}`,
