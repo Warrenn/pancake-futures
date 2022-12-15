@@ -340,7 +340,7 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
     }
     if (putOption && bidPrice < lowerLimit && basePosition.free > 0) {
         let sellAmount = floor(basePosition.free, basePrecision);
-        let sellPrice = floor(askPrice * (1 - slippage), quotePrecision);
+        let sellPrice = floor(bidPrice * (1 - slippage), quotePrecision);
         spotStrikePrice = lowerLimit;
         askAboveStrike = true;
         await immediateSell(symbol, sellAmount, sellPrice);
