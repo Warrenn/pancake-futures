@@ -77,7 +77,7 @@ function floor(num: number, precision: number = quotePrecision) {
 
 async function immediateSell(symbol: string, orderQty: number, price: number, coin: string = baseCurrency) {
     orderQty = floor(orderQty, basePrecision);
-    if (orderQty == 0) return;
+    if (orderQty <= (minSizes[coin] || 0)) return;
     positionsNeedUpdate = true;
 
     while (true) {
@@ -111,7 +111,7 @@ async function immediateSell(symbol: string, orderQty: number, price: number, co
 
 async function immediateBuy(symbol: string, orderQty: number, price: number, quoteCoin: string = quoteCurrency) {
     orderQty = floor(orderQty, basePrecision);
-    if (orderQty == 0) return;
+    if (orderQty <= ((minSizes[quoteCurrency] || 0) / price)) return;
     positionsNeedUpdate = true;
 
     while (true) {
