@@ -11,7 +11,7 @@ const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "
     USDT: 10,
     USDC: 10
 }, credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`, settingsKey = `${process.env.BYBIT_SETTINGS}`, region = `${process.env.BYBIT_REGION}`;
-let slippage = 0, symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, tradeMargin = 0, optionPrecision = 0, quotePrecision = 0, basePrecision = 0, sidewaysLimit = 0, optionIM = 0, logFrequency = 0, targetROI = 0, optionROI = 0, useTestnet = false, leverage = 0, optionSlippage = 0;
+let slippage = 0, symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, tradeMargin = 0, optionPrecision = 0, quotePrecision = 0, basePrecision = 0, sidewaysLimit = 0, optionIM = 0, logFrequency = 0, targetROI = 0, optionROI = 0, useTestnet = false, leverage = 0, optionSlippage = 0, stopLoss = 0;
 let spotStrikePrice = 0, initialEquity = 0, targetProfit = 0, sideWaysCount = 0, quantity = 0, currentMoment, expiryTime = null, client, assetsClient, unifiedClient, wsUnified = null, wsSpot = null, optionsNeedUpdate = false, positionsNeedUpdate = false, callSubscription = '', putSubscription = '', optionsTriggers = {}, callOption = null, putOption = null, basePosition, quotePosition, expiry = null, bidPrice = 0, askPrice = 0, bidBelowStrike = false, askAboveStrike = false, logCount = 0, ssm = null;
 function floor(num, precision = quotePrecision) {
     let exp = Math.pow(10, precision);
@@ -19,7 +19,7 @@ function floor(num, precision = quotePrecision) {
 }
 async function immediateSell(symbol, orderQty, price, coin = baseCurrency) {
     orderQty = floor(orderQty, basePrecision);
-    if (orderQty == 0)
+    if (orderQty <= (minSizes[coin] || 0))
         return;
     positionsNeedUpdate = true;
     while (true) {
@@ -50,7 +50,7 @@ async function immediateSell(symbol, orderQty, price, coin = baseCurrency) {
 }
 async function immediateBuy(symbol, orderQty, price, quoteCoin = quoteCurrency) {
     orderQty = floor(orderQty, basePrecision);
-    if (orderQty == 0)
+    if (orderQty <= ((minSizes[quoteCurrency] || 0) / price))
         return;
     positionsNeedUpdate = true;
     while (true) {
@@ -317,9 +317,9 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
     }
     if (expiryTime && !callOption && !putOption)
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
-    if (askAboveStrike && askPrice < spotStrikePrice)
+    if (askAboveStrike && (askPrice < spotStrikePrice || bidPrice > (spotStrikePrice * (1 + stopLoss))))
         askAboveStrike = false;
-    if (bidBelowStrike && bidPrice > spotStrikePrice)
+    if (bidBelowStrike && (bidPrice > spotStrikePrice || askPrice < (spotStrikePrice * (1 - stopLoss))))
         bidBelowStrike = false;
     if (bidBelowStrike || askAboveStrike)
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
@@ -483,7 +483,7 @@ let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
     slippage, baseCurrency, quoteCurrency, optionInterval, leverage,
     tradeMargin, optionPrecision, quotePrecision, basePrecision,
     sidewaysLimit, optionIM, logFrequency, targetROI, optionROI, useTestnet,
-    optionSlippage
+    optionSlippage, stopLoss
 } = JSON.parse(`${(_b = settingsParameter.Parameter) === null || _b === void 0 ? void 0 : _b.Value}`));
 symbol = `${baseCurrency}${quoteCurrency}`;
 while (true) {

@@ -653,7 +653,7 @@ let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
     slippage, baseCurrency, quoteCurrency, optionInterval, leverage,
     tradeMargin, optionPrecision, quotePrecision, basePrecision,
     sidewaysLimit, optionIM, logFrequency, targetROI, optionROI, useTestnet,
-    optionSlippage
+    optionSlippage, stopLoss
 } = JSON.parse(`${settingsParameter.Parameter?.Value}`));
 
 symbol = `${baseCurrency}${quoteCurrency}`;
