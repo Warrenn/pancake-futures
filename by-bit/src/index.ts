@@ -38,7 +38,8 @@ let
     optionROI: number = 0,
     useTestnet: boolean = false,
     leverage: number = 0,
-    optionSlippage: number = 0;
+    optionSlippage: number = 0,
+    stopLoss: number = 0;
 
 let
     spotStrikePrice: number = 0,
@@ -468,9 +469,9 @@ async function executeTrade({
     }
     if (expiryTime && !callOption && !putOption) return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
 
-    if (askAboveStrike && askPrice < spotStrikePrice) askAboveStrike = false;
+    if (askAboveStrike && (askPrice < spotStrikePrice || bidPrice > (spotStrikePrice * (1 + stopLoss)))) askAboveStrike = false;
 
-    if (bidBelowStrike && bidPrice > spotStrikePrice) bidBelowStrike = false;
+    if (bidBelowStrike && (bidPrice > spotStrikePrice || askPrice < (spotStrikePrice * (1 - stopLoss)))) bidBelowStrike = false;
 
     if (bidBelowStrike || askAboveStrike) return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
 
