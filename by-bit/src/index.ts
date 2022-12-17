@@ -185,6 +185,7 @@ async function log(message: string) {
 }
 
 async function consoleAndFile(message: string) {
+    console.log(message);
     console.error(message);
 }
 

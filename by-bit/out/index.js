@@ -118,6 +118,7 @@ async function log(message) {
     console.log(logLine);
 }
 async function consoleAndFile(message) {
+    console.log(message);
     console.error(message);
 }
 async function logError(message) {
