@@ -37,9 +37,7 @@ let
     targetROI: number = 0,
     optionROI: number = 0,
     useTestnet: boolean = false,
-    leverage: number = 0,
-    optionSlippage: number = 0,
-    stopLoss: number = 0;
+    leverage: number = 0;
 
 let
     spotStrikePrice: number = 0,
@@ -429,8 +427,11 @@ async function executeTrade({
     }
     else logCount++;
 
-    if (sideWaysCount > sidewaysLimit && !expiryTime) {
+    if (sideWaysCount > sidewaysLimit) {
         log(`Trading sideways ${sideWaysCount}`);
+
+        await settleOption(putOption, true);
+        await settleOption(callOption, true);
 
         let spotEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
         let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
@@ -469,9 +470,9 @@ async function executeTrade({
     }
     if (expiryTime && !callOption && !putOption) return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
 
-    if (askAboveStrike && (askPrice < spotStrikePrice || bidPrice > (spotStrikePrice * (1 + stopLoss)))) askAboveStrike = false;
+    if (askAboveStrike && askPrice < spotStrikePrice) askAboveStrike = false;
 
-    if (bidBelowStrike && (bidPrice > spotStrikePrice || askPrice < (spotStrikePrice * (1 - stopLoss)))) bidBelowStrike = false;
+    if (bidBelowStrike && bidPrice > spotStrikePrice) bidBelowStrike = false;
 
     if (bidBelowStrike || askAboveStrike) return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
 
@@ -480,33 +481,36 @@ async function executeTrade({
         bidPrice < upperLimit &&
         askPrice > lowerLimit) {
         await settleAccount(basePosition, askPrice);
-        if (askPrice > (upperLimit * (1 - optionSlippage))) {
-            spotStrikePrice = upperLimit * (1 - optionSlippage);
+        if (askPrice > upperLimit) {
+            spotStrikePrice = upperLimit;
             askAboveStrike = true;
         }
-        if (bidPrice < (lowerLimit * (1 + optionSlippage))) {
-            spotStrikePrice = (lowerLimit * (1 + optionSlippage));
+        if (bidPrice < lowerLimit) {
+            spotStrikePrice = lowerLimit;
             bidBelowStrike = true;
         }
+        sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
     }
 
-    if (putOption && bidPrice < (lowerLimit * (1 + optionSlippage)) && basePosition.free > 0) {
+    if (putOption && bidPrice < lowerLimit && basePosition.free > 0) {
         let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(lowerLimit * (1 - slippage), quotePrecision);
         spotStrikePrice = lowerLimit;
         askAboveStrike = true;
         await immediateSell(symbol, sellAmount, sellPrice);
+        sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
     }
 
     let longAmount = floor(quantity - netPosition, basePrecision);
-    if (callOption && askPrice > (upperLimit * (1 - optionSlippage)) && longAmount > 0) {
+    if (callOption && askPrice > upperLimit && longAmount > 0) {
         let buyAmount = floor(longAmount, basePrecision);
         let buyPrice = floor(upperLimit * (1 + slippage), quotePrecision);
         spotStrikePrice = upperLimit;
         bidBelowStrike = true;
         await immediateBuy(symbol, buyAmount, buyPrice);
+        sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
     }
 
@@ -652,8 +656,7 @@ let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
 ({
     slippage, baseCurrency, quoteCurrency, optionInterval, leverage,
     tradeMargin, optionPrecision, quotePrecision, basePrecision,
-    sidewaysLimit, optionIM, logFrequency, targetROI, optionROI, useTestnet,
-    optionSlippage, stopLoss
+    sidewaysLimit, optionIM, logFrequency, targetROI, optionROI, useTestnet
 } = JSON.parse(`${settingsParameter.Parameter?.Value}`));
 
 symbol = `${baseCurrency}${quoteCurrency}`;

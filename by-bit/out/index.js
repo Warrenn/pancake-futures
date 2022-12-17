@@ -11,7 +11,7 @@ const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "
     USDT: 10,
     USDC: 10
 }, credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`, settingsKey = `${process.env.BYBIT_SETTINGS}`, region = `${process.env.BYBIT_REGION}`;
-let slippage = 0, symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, tradeMargin = 0, optionPrecision = 0, quotePrecision = 0, basePrecision = 0, sidewaysLimit = 0, optionIM = 0, logFrequency = 0, targetROI = 0, optionROI = 0, useTestnet = false, leverage = 0, optionSlippage = 0, stopLoss = 0;
+let slippage = 0, symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, tradeMargin = 0, optionPrecision = 0, quotePrecision = 0, basePrecision = 0, sidewaysLimit = 0, optionIM = 0, logFrequency = 0, targetROI = 0, optionROI = 0, useTestnet = false, leverage = 0;
 let spotStrikePrice = 0, initialEquity = 0, targetProfit = 0, sideWaysCount = 0, quantity = 0, currentMoment, expiryTime = null, client, assetsClient, unifiedClient, wsUnified = null, wsSpot = null, optionsNeedUpdate = false, positionsNeedUpdate = false, callSubscription = '', putSubscription = '', optionsTriggers = {}, callOption = null, putOption = null, basePosition, quotePosition, expiry = null, bidPrice = 0, askPrice = 0, bidBelowStrike = false, askAboveStrike = false, logCount = 0, ssm = null;
 function floor(num, precision = quotePrecision) {
     let exp = Math.pow(10, precision);
@@ -285,8 +285,10 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
     }
     else
         logCount++;
-    if (sideWaysCount > sidewaysLimit && !expiryTime) {
+    if (sideWaysCount > sidewaysLimit) {
         log(`Trading sideways ${sideWaysCount}`);
+        await settleOption(putOption, true);
+        await settleOption(callOption, true);
         let spotEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
         let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
         let availiableUnified = (!coin || coin.length == 0) ? 0 : floor(coin[0].availableBalance, quotePrecision);
@@ -317,9 +319,9 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
     }
     if (expiryTime && !callOption && !putOption)
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
-    if (askAboveStrike && (askPrice < spotStrikePrice || bidPrice > (spotStrikePrice * (1 + stopLoss))))
+    if (askAboveStrike && askPrice < spotStrikePrice)
         askAboveStrike = false;
-    if (bidBelowStrike && (bidPrice > spotStrikePrice || askPrice < (spotStrikePrice * (1 - stopLoss))))
+    if (bidBelowStrike && bidPrice > spotStrikePrice)
         bidBelowStrike = false;
     if (bidBelowStrike || askAboveStrike)
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
@@ -328,31 +330,34 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         bidPrice < upperLimit &&
         askPrice > lowerLimit) {
         await settleAccount(basePosition, askPrice);
-        if (askPrice > (upperLimit * (1 - optionSlippage))) {
-            spotStrikePrice = upperLimit * (1 - optionSlippage);
+        if (askPrice > upperLimit) {
+            spotStrikePrice = upperLimit;
             askAboveStrike = true;
         }
-        if (bidPrice < (lowerLimit * (1 + optionSlippage))) {
-            spotStrikePrice = (lowerLimit * (1 + optionSlippage));
+        if (bidPrice < lowerLimit) {
+            spotStrikePrice = lowerLimit;
             bidBelowStrike = true;
         }
+        sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
     }
-    if (putOption && bidPrice < (lowerLimit * (1 + optionSlippage)) && basePosition.free > 0) {
+    if (putOption && bidPrice < lowerLimit && basePosition.free > 0) {
         let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(lowerLimit * (1 - slippage), quotePrecision);
         spotStrikePrice = lowerLimit;
         askAboveStrike = true;
         await immediateSell(symbol, sellAmount, sellPrice);
+        sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
     }
     let longAmount = floor(quantity - netPosition, basePrecision);
-    if (callOption && askPrice > (upperLimit * (1 - optionSlippage)) && longAmount > 0) {
+    if (callOption && askPrice > upperLimit && longAmount > 0) {
         let buyAmount = floor(longAmount, basePrecision);
         let buyPrice = floor(upperLimit * (1 + slippage), quotePrecision);
         spotStrikePrice = upperLimit;
         bidBelowStrike = true;
         await immediateBuy(symbol, buyAmount, buyPrice);
+        sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
     }
     if (callOption || putOption)
@@ -482,8 +487,7 @@ let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
 ({
     slippage, baseCurrency, quoteCurrency, optionInterval, leverage,
     tradeMargin, optionPrecision, quotePrecision, basePrecision,
-    sidewaysLimit, optionIM, logFrequency, targetROI, optionROI, useTestnet,
-    optionSlippage, stopLoss
+    sidewaysLimit, optionIM, logFrequency, targetROI, optionROI, useTestnet
 } = JSON.parse(`${(_b = settingsParameter.Parameter) === null || _b === void 0 ? void 0 : _b.Value}`));
 symbol = `${baseCurrency}${quoteCurrency}`;
 while (true) {
