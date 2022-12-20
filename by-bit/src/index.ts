@@ -35,7 +35,6 @@ let
     optionIM: number = 0,
     logFrequency: number = 0,
     targetROI: number = 0,
-    optionROI: number = 0,
     useTestnet: boolean = false,
     leverage: number = 0;
 
@@ -56,7 +55,9 @@ let
     positionsNeedUpdate: boolean = false,
     callSubscription: string = '',
     putSubscription: string = '',
-    optionsTriggers: { [key: string]: number } = {},
+    putSymbol: string = '',
+    callSymbol: string = '',
+    optionBidPrices: { [key: string]: number } = {},
     callOption: OptionPosition | null = null,
     putOption: OptionPosition | null = null,
     basePosition: Position,
@@ -222,36 +223,7 @@ function getPosition(loanAccountList: Position[], tokenId: string, precision: nu
     return position;
 }
 
-async function settleOption(optionPosition: OptionPosition | null, force: boolean = false): Promise<boolean> {
-    if (!optionPosition) return false;
-
-    let entryPrice = parseFloat(optionPosition.entryPrice);
-    let uPnl = parseFloat(optionPosition.unrealisedPnl);
-    let size = Math.abs(parseFloat(optionPosition.size));
-    let targetProfit = entryPrice * optionROI * size;
-
-    if (!force && uPnl < targetProfit) return false;
-    log(`settling option  ${optionPosition.symbol} ${size} upnl:${uPnl} target:${targetProfit}`);
-    optionsNeedUpdate = true;
-
-    while (true) {
-        let { retCode, retMsg } = await unifiedClient.submitOrder({
-            category: 'option',
-            qty: `${size}`,
-            orderType: "Market",
-            side: "Buy",
-            symbol: optionPosition.symbol,
-            timeInForce: "ImmediateOrCancel",
-            orderLinkId: `${uuid()}`,
-            reduceOnly: true
-        });
-        if (retCode == 110063) return false;
-        if (retCode == 0) return true;
-        logError(`settlement failed ${optionPosition.symbol} ${size} upnl:${uPnl} target:${targetProfit} (${retCode}) failed ${retMsg}`);
-    }
-}
-
-async function placeStraddle(price: number, size: number): Promise<Date | null> {
+function getOptionSymbols(price: number): { putSymbol: string, callSymbol: string } {
     let contractPrice = Math.floor(price / optionInterval) * optionInterval;
     let halfInterval = optionInterval / 2;
     let lowerLimit = (price % optionInterval) < halfInterval ? contractPrice - optionInterval : contractPrice;
@@ -269,6 +241,11 @@ async function placeStraddle(price: number, size: number): Promise<Date | null> 
 
     let putSymbol = `${baseCurrency}-${expiryTime.getUTCDate()}${months[expiryTime.getUTCMonth()]}${yearStr}-${lowerLimit}-P`;
     let callSymbol = `${baseCurrency}-${expiryTime.getUTCDate()}${months[expiryTime.getUTCMonth()]}${yearStr}-${upperLimit}-C`;
+    return { putSymbol, callSymbol };
+}
+
+async function placeStraddle(price: number, size: number): Promise<Date | null> {
+    let { putSymbol, callSymbol } = getOptionSymbols(price);
 
     log(`Placing straddle price:${price} size:${size} put:${putSymbol} call:${callSymbol}`);
     var { retCode, retMsg } = await unifiedClient.submitOrder({
@@ -428,11 +405,16 @@ async function executeTrade({
     }
     else logCount++;
 
-    if (sideWaysCount > sidewaysLimit) {
-        log(`Trading sideways ${sideWaysCount}`);
+    let callProfit = 0;
+    if (sideWaysCount > sidewaysLimit && !expiryTime) {
+        ({ callSymbol, putSymbol } = getOptionSymbols(askPrice));
+        if (callSymbol in optionBidPrices || putSymbol in optionBidPrices) callProfit = profit;
+        if (callSymbol in optionBidPrices) callProfit = callProfit + optionBidPrices[callSymbol];
+        if (putSymbol in optionBidPrices) callProfit = callProfit + optionBidPrices[putSymbol];
+    }
 
-        await settleOption(putOption, true);
-        await settleOption(callOption, true);
+    if (sideWaysCount > sidewaysLimit && !expiryTime && callProfit > 0) {
+        log(`Trading sideways ${sideWaysCount}`);
 
         let spotEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
         let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
@@ -480,7 +462,8 @@ async function executeTrade({
     if ((callOption || putOption) &&
         netPosition != 0 &&
         bidPrice < upperLimit &&
-        askPrice > lowerLimit) {
+        askPrice > lowerLimit &&
+        sideWaysCount < sidewaysLimit) {
         await settleAccount(basePosition, askPrice);
         if (askPrice > upperLimit) {
             spotStrikePrice = upperLimit;
@@ -590,10 +573,6 @@ async function getOptions(): Promise<{
         let optionPosition = <OptionPosition>list[c];
         let matches = optionPosition.symbol.match(checkExpression);
 
-        let entryPrice = parseFloat(optionPosition.entryPrice);
-        let triggerAmount = entryPrice - (entryPrice * optionROI);
-        optionsTriggers[`tickers.${optionPosition.symbol}`] = triggerAmount;
-
         if (!matches) continue;
         if (parseFloat(optionPosition.size) == 0) continue;
         optionPosition.limit = parseFloat(matches[4]);
@@ -657,7 +636,7 @@ let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
 ({
     slippage, baseCurrency, quoteCurrency, optionInterval, leverage,
     tradeMargin, optionPrecision, quotePrecision, basePrecision,
-    sidewaysLimit, optionIM, logFrequency, targetROI, optionROI, useTestnet
+    sidewaysLimit, optionIM, logFrequency, targetROI, useTestnet
 } = JSON.parse(`${settingsParameter.Parameter?.Value}`));
 
 symbol = `${baseCurrency}${quoteCurrency}`;
@@ -695,7 +674,8 @@ while (true) {
         });
 
         wsUnified.on('update', (data) => {
-            optionsNeedUpdate = optionsNeedUpdate || (data?.topic in optionsTriggers && floor(data.data.markPrice, quotePrecision) <= optionsTriggers[data.topic]);
+            if (!data?.data) return;
+            optionBidPrices[data.data.symbol] = floor(data.data.bidPrice, quotePrecision);
         });
 
         wsSpot = new WebsocketClient({
@@ -719,6 +699,16 @@ while (true) {
         ({ basePosition, quotePosition } = await getPositions());
         ({ callOption, putOption, expiry } = await getOptions());
 
+
+        if (callOption && callSubscription == '') {
+            callSubscription = callOption.symbol;
+            wsUnified.subscribe([`tickers.${callSubscription}`]);
+        }
+        if (putOption && putSubscription == '') {
+            putSubscription = putOption.symbol;
+            wsUnified.subscribe([`tickers.${putSubscription}`]);
+        }
+
         while (true) {
             var { result: { price: p }, retCode, retMsg } = await client.getLastTradedPrice(symbol);
             askPrice = floor(p, quotePrecision);
@@ -741,6 +731,8 @@ while (true) {
                 targetProfit = 0;
                 sideWaysCount = 0;
                 expiryTime = null;
+                callSymbol = '';
+                putSymbol = '';
 
                 await settleAccount(basePosition, askPrice);
                 await moveFundsToSpot();
@@ -763,21 +755,20 @@ while (true) {
 
             ({ expiryTime, initialEquity, quantity, sideWaysCount, spotStrikePrice, targetProfit, askAboveStrike, bidBelowStrike } = await executeTrade({ basePosition, callOption, expiry, expiryTime, initialEquity, askPrice, bidPrice, askAboveStrike, bidBelowStrike, putOption, quantity, quotePosition, sideWaysCount, spotStrikePrice, targetProfit }));
 
-            if (callOption && callSubscription == '') {
-                callSubscription = callOption.symbol;
+
+            if (callSubscription != callSymbol && callSubscription != '') {
+                wsUnified.unsubscribe([`tickers.${callSubscription}`]);
+            }
+            if (putSubscription != putSymbol && putSubscription != '') {
+                wsUnified.unsubscribe([`tickers.${putSubscription}`]);
+            }
+            if (callSubscription != callSymbol && callSymbol != '') {
+                callSubscription = callSymbol;
                 wsUnified.subscribe([`tickers.${callSubscription}`]);
             }
-            if (putOption && putSubscription == '') {
-                putSubscription = putOption.symbol;
+            if (putSubscription != putSymbol && putSymbol != '') {
+                putSubscription = putSymbol;
                 wsUnified.subscribe([`tickers.${putSubscription}`]);
-            }
-            if (!callOption && callSubscription != '') {
-                wsUnified.unsubscribe([`tickers.${callSubscription}`]);
-                callSubscription = '';
-            }
-            if (!putOption && putSubscription != '') {
-                wsUnified.unsubscribe([`tickers.${putSubscription}`]);
-                putSubscription = '';
             }
         }
     }
