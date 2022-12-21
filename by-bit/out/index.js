@@ -559,6 +559,8 @@ while (true) {
                 expiryTime = null;
                 callSymbol = '';
                 putSymbol = '';
+                optionsNeedUpdate = true;
+                positionsNeedUpdate = true;
                 await settleAccount(basePosition, askPrice);
                 await moveFundsToSpot();
                 ({ initialEquity, quantity, spotStrikePrice, targetProfit } = calculateState({ spotStrikePrice, targetProfit, basePosition, callOption: null, initialEquity, price: askPrice, putOption: null, quantity, quotePosition }));

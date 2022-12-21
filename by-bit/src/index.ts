@@ -744,6 +744,8 @@ while (true) {
                 expiryTime = null;
                 callSymbol = '';
                 putSymbol = '';
+                optionsNeedUpdate = true;
+                positionsNeedUpdate = true;
 
                 await settleAccount(basePosition, askPrice);
                 await moveFundsToSpot();
