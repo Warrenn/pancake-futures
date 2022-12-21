@@ -534,6 +534,7 @@ async function executeTrade({
         log(`ask upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} `);
         await immediateBuy(symbol, buyAmount, buyPrice);
         sideWaysCount++;
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
     }
 
     if ((bidPrice < spotStrikePrice) && (basePosition.free > 0)) {
