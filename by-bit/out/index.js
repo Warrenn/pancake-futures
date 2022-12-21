@@ -1,4 +1,5 @@
 var _a, _b;
+import { setTimeout as asyncSleep } from 'timers/promises';
 import { SpotClientV3, AccountAssetClient, WebsocketClient, UnifiedMarginClient } from "bybit-api";
 import { v4 as uuid } from 'uuid';
 import AWS from 'aws-sdk';
@@ -10,8 +11,8 @@ const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "
     USDT: 10,
     USDC: 10
 }, credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`, settingsKey = `${process.env.BYBIT_SETTINGS}`, region = `${process.env.BYBIT_REGION}`;
-let slippage = 0, symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, tradeMargin = 0, optionPrecision = 0, quotePrecision = 0, basePrecision = 0, sidewaysLimit = 0, optionIM = 0, logFrequency = 0, targetROI = 0, optionROI = 0, useTestnet = false, leverage = 0;
-let spotStrikePrice = 0, initialEquity = 0, targetProfit = 0, sideWaysCount = 0, quantity = 0, currentMoment, expiryTime = null, client, assetsClient, unifiedClient, wsUnified = null, wsSpot = null, optionsNeedUpdate = false, positionsNeedUpdate = false, callSubscription = '', putSubscription = '', optionsTriggers = {}, optionBidPrices = {}, callOption = null, putOption = null, basePosition, quotePosition, expiry = null, bidPrice = 0, askPrice = 0, bidBelowStrike = false, askAboveStrike = false, logCount = 0, ssm = null;
+let slippage = 0, symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, tradeMargin = 0, optionPrecision = 0, quotePrecision = 0, basePrecision = 0, sidewaysLimit = 0, optionIM = 0, logFrequency = 0, targetROI = 0, useTestnet = false, leverage = 0;
+let spotStrikePrice = 0, initialEquity = 0, targetProfit = 0, sideWaysCount = 0, quantity = 0, currentMoment, expiryTime = null, client, assetsClient, unifiedClient, wsUnified = null, wsSpot = null, optionsNeedUpdate = false, positionsNeedUpdate = false, callSubscription = '', putSubscription = '', putSymbol = '', callSymbol = '', optionBidPrices = {}, callOption = null, putOption = null, basePosition, quotePosition, expiry = null, bidPrice = 0, askPrice = 0, bidBelowStrike = false, askAboveStrike = false, logCount = 0, ssm = null;
 function floor(num, precision = quotePrecision) {
     let exp = Math.pow(10, precision);
     return Math.floor((+num * exp)) / exp;
@@ -150,35 +151,6 @@ function getPosition(loanAccountList, tokenId, precision) {
     position.loan = floor(position.loan, precision);
     return position;
 }
-async function settleOption(optionPosition, force = false) {
-    if (!optionPosition)
-        return false;
-    let entryPrice = parseFloat(optionPosition.entryPrice);
-    let uPnl = parseFloat(optionPosition.unrealisedPnl);
-    let size = Math.abs(parseFloat(optionPosition.size));
-    let targetProfit = entryPrice * optionROI * size;
-    if (!force && uPnl < targetProfit)
-        return false;
-    log(`settling option  ${optionPosition.symbol} ${size} upnl:${uPnl} target:${targetProfit}`);
-    optionsNeedUpdate = true;
-    while (true) {
-        let { retCode, retMsg } = await unifiedClient.submitOrder({
-            category: 'option',
-            qty: `${size}`,
-            orderType: "Market",
-            side: "Buy",
-            symbol: optionPosition.symbol,
-            timeInForce: "ImmediateOrCancel",
-            orderLinkId: `${uuid()}`,
-            reduceOnly: true
-        });
-        if (retCode == 110063)
-            return false;
-        if (retCode == 0)
-            return true;
-        logError(`settlement failed ${optionPosition.symbol} ${size} upnl:${uPnl} target:${targetProfit} (${retCode}) failed ${retMsg}`);
-    }
-}
 function getOptionSymbols(price) {
     let contractPrice = Math.floor(price / optionInterval) * optionInterval;
     let halfInterval = optionInterval / 2;
@@ -267,6 +239,7 @@ function calculateState({ spotStrikePrice, initialEquity, targetProfit, quantity
         initialEquity = calculateNetEquity(basePosition, quotePosition, price);
         let option = callOption || putOption;
         quantity = Math.abs(parseFloat(`${option === null || option === void 0 ? void 0 : option.size}`));
+        targetProfit = floor(quantity * price * targetROI, quotePrecision);
     }
     return { spotStrikePrice, initialEquity, targetProfit, quantity };
 }
@@ -283,24 +256,34 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         bidPrice = askPrice;
     let netEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
     let profit = netEquity - initialEquity - targetProfit;
+    let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
     if ((logCount % logFrequency) == 0) {
         log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime === null || expiryTime === void 0 ? void 0 : expiryTime.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption === null || callOption === void 0 ? void 0 : callOption.unrealisedPnl} p:${putOption === null || putOption === void 0 ? void 0 : putOption.unrealisedPnl}`);
         logCount = 1;
     }
     else
         logCount++;
-    if (sideWaysCount > sidewaysLimit) {
+    if (sideWaysCount > sidewaysLimit && !expiryTime) {
         log(`Trading sideways ${sideWaysCount}`);
-        await settleOption(putOption, true);
-        await settleOption(callOption, true);
+        ({ callSymbol, putSymbol } = getOptionSymbols(askPrice));
         let spotEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
         let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
         let availiableUnified = (!coin || coin.length == 0) ? 0 : floor(coin[0].availableBalance, quotePrecision);
         let equity = (spotEquity + availiableUnified);
         let tradableEquity = equity * tradeMargin;
         quantity = floor((tradableEquity * leverage) / ((1 + optionIM) * bidPrice), optionPrecision);
+        targetProfit = floor(quantity * bidPrice * targetROI, quotePrecision);
         let requiredMargin = bidPrice * quantity * optionIM;
+        let callProfit = 0;
+        if (callSymbol in optionBidPrices || putSymbol in optionBidPrices)
+            callProfit = netEquity - initialEquity - targetProfit;
+        if (callSymbol in optionBidPrices)
+            callProfit = callProfit + (optionBidPrices[callSymbol] * quantity);
+        if (putSymbol in optionBidPrices)
+            callProfit = callProfit + (optionBidPrices[putSymbol] * quantity);
         await settleAccount(basePosition, bidPrice);
+        if (callProfit <= 0)
+            return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
         await splitEquity(requiredMargin - availiableUnified);
         expiryTime = await placeStraddle(bidPrice, quantity);
         await reconcileLoan(basePosition, quantity, bidPrice);
@@ -310,29 +293,29 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         optionsNeedUpdate = true;
         spotStrikePrice = 0;
         sideWaysCount = 0;
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
     }
-    let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
     if (expiryTime && !callOption && !putOption && netPosition != 0) {
         await settleAccount(basePosition, askPrice);
         await moveFundsToSpot();
         spotStrikePrice = 0;
         initialEquity = 0;
         sideWaysCount = 0;
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
     }
     if (expiryTime && !callOption && !putOption)
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
     if (askAboveStrike && askPrice < spotStrikePrice)
         askAboveStrike = false;
     if (bidBelowStrike && bidPrice > spotStrikePrice)
         bidBelowStrike = false;
     if (bidBelowStrike || askAboveStrike)
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
     if ((callOption || putOption) &&
         netPosition != 0 &&
         bidPrice < upperLimit &&
-        askPrice > lowerLimit) {
+        askPrice > lowerLimit &&
+        sideWaysCount < sidewaysLimit) {
         await settleAccount(basePosition, askPrice);
         if (askPrice > upperLimit) {
             spotStrikePrice = upperLimit;
@@ -343,7 +326,7 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
             bidBelowStrike = true;
         }
         sideWaysCount++;
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
     }
     if (putOption && bidPrice < lowerLimit && basePosition.free > 0) {
         let sellAmount = floor(basePosition.free, basePrecision);
@@ -352,7 +335,7 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         askAboveStrike = true;
         await immediateSell(symbol, sellAmount, sellPrice);
         sideWaysCount++;
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
     }
     let longAmount = floor(quantity - netPosition, basePrecision);
     if (callOption && askPrice > upperLimit && longAmount > 0) {
@@ -362,10 +345,10 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         bidBelowStrike = true;
         await immediateBuy(symbol, buyAmount, buyPrice);
         sideWaysCount++;
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
     }
     if (callOption || putOption)
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
     if (profit > 0) {
         await settleAccount(basePosition, askPrice);
         await moveFundsToSpot();
@@ -375,7 +358,7 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         initialEquity = 0;
         targetProfit = 0;
         sideWaysCount = 0;
-        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+        return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
     }
     if ((askPrice > spotStrikePrice) && (longAmount > 0)) {
         let buyAmount = floor(longAmount, basePrecision);
@@ -391,7 +374,7 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         await immediateSell(symbol, sellAmount, sellPrice);
         sideWaysCount++;
     }
-    return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
+    return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
 }
 async function splitEquity(unifiedAmount) {
     unifiedAmount = floor(unifiedAmount, quotePrecision);
@@ -425,9 +408,6 @@ async function getOptions() {
     for (let c = 0; c < (list || []).length; c++) {
         let optionPosition = list[c];
         let matches = optionPosition.symbol.match(checkExpression);
-        let entryPrice = parseFloat(optionPosition.entryPrice);
-        let triggerAmount = entryPrice - (entryPrice * optionROI);
-        optionsTriggers[`tickers.${optionPosition.symbol}`] = triggerAmount;
         if (!matches)
             continue;
         if (parseFloat(optionPosition.size) == 0)
@@ -491,7 +471,7 @@ let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
 ({
     slippage, baseCurrency, quoteCurrency, optionInterval, leverage,
     tradeMargin, optionPrecision, quotePrecision, basePrecision,
-    sidewaysLimit, optionIM, logFrequency, targetROI, optionROI, useTestnet
+    sidewaysLimit, optionIM, logFrequency, targetROI, useTestnet
 } = JSON.parse(`${(_b = settingsParameter.Parameter) === null || _b === void 0 ? void 0 : _b.Value}`));
 symbol = `${baseCurrency}${quoteCurrency}`;
 while (true) {
@@ -519,11 +499,13 @@ while (true) {
             key: key,
             secret: secret,
             fetchTimeOffsetBeforeAuth: true,
-            market: 'unifiedOption'
+            market: 'usdcOption'
+            //market: 'unifiedOption'
         });
         wsUnified.on('update', (data) => {
-            //optionBidPrices
-            optionsNeedUpdate = optionsNeedUpdate || ((data === null || data === void 0 ? void 0 : data.topic) in optionsTriggers && floor(data.data.markPrice, quotePrecision) <= optionsTriggers[data.topic]);
+            if (!(data === null || data === void 0 ? void 0 : data.data))
+                return;
+            optionBidPrices[data.data.symbol] = floor(data.data.bidPrice, quotePrecision);
         });
         wsSpot = new WebsocketClient({
             testnet: useTestnet,
@@ -546,62 +528,66 @@ while (true) {
         ({ callOption, putOption, expiry } = await getOptions());
         if (callOption && callSubscription == '') {
             callSubscription = callOption.symbol;
-            wsUnified.subscribe([`tickers.${callSubscription}`]);
+            callSymbol = callSubscription;
+            wsUnified.subscribe([`instrument_info.${callSubscription}`]);
         }
         if (putOption && putSubscription == '') {
             putSubscription = putOption.symbol;
-            wsUnified.subscribe([`tickers.${putSubscription}`]);
+            putSymbol = putSubscription;
+            wsUnified.subscribe([`instrument_info.${putSubscription}`]);
         }
-        // while (true) {
-        //     var { result: { price: p }, retCode, retMsg } = await client.getLastTradedPrice(symbol);
-        //     askPrice = floor(p, quotePrecision);
-        //     if (isNaN(askPrice)) continue;
-        //     if (retCode == 0) break;
-        //     logError(`Failed getting price (${retCode}) ${retMsg}`)
-        // }
-        // ({ initialEquity, quantity, spotStrikePrice, targetProfit } = calculateState({ spotStrikePrice, targetProfit, basePosition, callOption, initialEquity, price: askPrice, putOption, quantity, quotePosition }));
-        // await reconcileLoan(basePosition, quantity, askPrice);
-        // while (true) {
-        //     await asyncSleep(100);
-        //     currentMoment = new Date();
-        //     if (expiryTime && currentMoment > expiryTime) {
-        //         spotStrikePrice = 0;
-        //         initialEquity = 0;
-        //         targetProfit = 0;
-        //         sideWaysCount = 0;
-        //         expiryTime = null;
-        //         await settleAccount(basePosition, askPrice);
-        //         await moveFundsToSpot();
-        //         ({ initialEquity, quantity, spotStrikePrice, targetProfit } = calculateState({ spotStrikePrice, targetProfit, basePosition, callOption: null, initialEquity, price: askPrice, putOption: null, quantity, quotePosition }));
-        //         await reconcileLoan(basePosition, quantity, askPrice);
-        //     }
-        //     if (positionsNeedUpdate) {
-        //         ({ basePosition, quotePosition } = await getPositions());
-        //         positionsNeedUpdate = false;
-        //     }
-        //     if (optionsNeedUpdate) {
-        //         ({ callOption, putOption, expiry } = await getOptions());
-        //         optionsNeedUpdate = false;
-        //     }
-        //     ({ initialEquity, quantity, spotStrikePrice, targetProfit } = calculateState({ spotStrikePrice, targetProfit, basePosition, callOption, initialEquity, price: askPrice, putOption, quantity, quotePosition }));
-        //     ({ expiryTime, initialEquity, quantity, sideWaysCount, spotStrikePrice, targetProfit, askAboveStrike, bidBelowStrike } = await executeTrade({ basePosition, callOption, expiry, expiryTime, initialEquity, askPrice, bidPrice, askAboveStrike, bidBelowStrike, putOption, quantity, quotePosition, sideWaysCount, spotStrikePrice, targetProfit }));
-        //     if (callOption && callSubscription == '') {
-        //         callSubscription = callOption.symbol;
-        //         wsUnified.subscribe([`tickers.${callSubscription}`]);
-        //     }
-        //     if (putOption && putSubscription == '') {
-        //         putSubscription = putOption.symbol;
-        //         wsUnified.subscribe([`tickers.${putSubscription}`]);
-        //     }
-        //     if (!callOption && callSubscription != '') {
-        //         wsUnified.unsubscribe([`tickers.${callSubscription}`]);
-        //         callSubscription = '';
-        //     }
-        //     if (!putOption && putSubscription != '') {
-        //         wsUnified.unsubscribe([`tickers.${putSubscription}`]);
-        //         putSubscription = '';
-        //     }
-        // }
+        while (true) {
+            var { result: { price: p }, retCode, retMsg } = await client.getLastTradedPrice(symbol);
+            askPrice = floor(p, quotePrecision);
+            if (isNaN(askPrice))
+                continue;
+            if (retCode == 0)
+                break;
+            logError(`Failed getting price (${retCode}) ${retMsg}`);
+        }
+        ({ initialEquity, quantity, spotStrikePrice, targetProfit } = calculateState({ spotStrikePrice, targetProfit, basePosition, callOption, initialEquity, price: askPrice, putOption, quantity, quotePosition }));
+        await reconcileLoan(basePosition, quantity, askPrice);
+        while (true) {
+            await asyncSleep(100);
+            currentMoment = new Date();
+            if (expiryTime && currentMoment > expiryTime) {
+                spotStrikePrice = 0;
+                initialEquity = 0;
+                targetProfit = 0;
+                sideWaysCount = 0;
+                expiryTime = null;
+                callSymbol = '';
+                putSymbol = '';
+                await settleAccount(basePosition, askPrice);
+                await moveFundsToSpot();
+                ({ initialEquity, quantity, spotStrikePrice, targetProfit } = calculateState({ spotStrikePrice, targetProfit, basePosition, callOption: null, initialEquity, price: askPrice, putOption: null, quantity, quotePosition }));
+                await reconcileLoan(basePosition, quantity, askPrice);
+            }
+            if (positionsNeedUpdate) {
+                ({ basePosition, quotePosition } = await getPositions());
+                positionsNeedUpdate = false;
+            }
+            if (optionsNeedUpdate) {
+                ({ callOption, putOption, expiry } = await getOptions());
+                optionsNeedUpdate = false;
+            }
+            ({ initialEquity, quantity, spotStrikePrice, targetProfit } = calculateState({ spotStrikePrice, targetProfit, basePosition, callOption, initialEquity, price: askPrice, putOption, quantity, quotePosition }));
+            ({ expiryTime, initialEquity, quantity, sideWaysCount, spotStrikePrice, targetProfit, askAboveStrike, bidBelowStrike, callSymbol, putSymbol } = await executeTrade({ basePosition, callOption, expiry, expiryTime, initialEquity, askPrice, bidPrice, askAboveStrike, bidBelowStrike, putOption, quantity, quotePosition, sideWaysCount, spotStrikePrice, targetProfit, callSymbol, putSymbol }));
+            if (callSubscription != callSymbol && callSubscription != '') {
+                wsUnified.unsubscribe([`instrument_info.${callSubscription}`]);
+            }
+            if (putSubscription != putSymbol && putSubscription != '') {
+                wsUnified.unsubscribe([`instrument_info.${putSubscription}`]);
+            }
+            if (callSubscription != callSymbol && callSymbol != '') {
+                wsUnified.subscribe([`instrument_info.${callSymbol}`]);
+            }
+            if (putSubscription != putSymbol && putSymbol != '') {
+                wsUnified.subscribe([`instrument_info.${putSymbol}`]);
+            }
+            putSubscription = putSymbol;
+            callSubscription = callSymbol;
+        }
     }
     catch (err) {
         try {
