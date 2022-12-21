@@ -343,7 +343,8 @@ function calculateState({
         initialEquity = calculateNetEquity(basePosition, quotePosition, price);
         let option = callOption || putOption;
         quantity = Math.abs(parseFloat(`${option?.size}`));
-        targetProfit = floor(quantity * price * targetROI, quotePrecision);
+        let tradableEquity = (price * quantity * (1 + optionIM)) / leverage;
+        targetProfit = floor(tradableEquity * targetROI, quotePrecision);
     }
     return { spotStrikePrice, initialEquity, targetProfit, quantity };
 }
@@ -423,7 +424,7 @@ async function executeTrade({
         let tradableEquity = equity * tradeMargin;
 
         quantity = floor((tradableEquity * leverage) / ((1 + optionIM) * bidPrice), optionPrecision);
-        targetProfit = floor(quantity * bidPrice * targetROI, quotePrecision);
+        targetProfit = floor(tradableEquity * targetROI, quotePrecision);
         let requiredMargin = bidPrice * quantity * optionIM;
         let callProfit = 0;
 
