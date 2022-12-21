@@ -413,8 +413,6 @@ async function executeTrade({
     else logCount++;
 
     if (sideWaysCount > sidewaysLimit && !expiryTime) {
-        log(`Trading sideways ${sideWaysCount}`);
-
         ({ callSymbol, putSymbol } = getOptionSymbols(askPrice));
 
         let spotEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
@@ -426,15 +424,20 @@ async function executeTrade({
         quantity = floor((tradableEquity * leverage) / ((1 + optionIM) * bidPrice), optionPrecision);
         targetProfit = floor(tradableEquity * targetROI, quotePrecision);
         let requiredMargin = bidPrice * quantity * optionIM;
-        let callProfit = 0;
+        let optionProfit = 0;
 
-        if (callSymbol in optionBidPrices || putSymbol in optionBidPrices) callProfit = netEquity - initialEquity - targetProfit;
-        if (callSymbol in optionBidPrices) callProfit = callProfit + (optionBidPrices[callSymbol] * quantity);
-        if (putSymbol in optionBidPrices) callProfit = callProfit + (optionBidPrices[putSymbol] * quantity);
+        if (callSymbol in optionBidPrices || putSymbol in optionBidPrices) optionProfit = netEquity - initialEquity - targetProfit;
+        if (callSymbol in optionBidPrices) optionProfit = optionProfit + (optionBidPrices[callSymbol] * quantity);
+        if (putSymbol in optionBidPrices) optionProfit = optionProfit + (optionBidPrices[putSymbol] * quantity);
 
-        await settleAccount(basePosition, bidPrice);
+        if ((logCount % logFrequency) == 0) {
+            log(`Trading Sideways ${sideWaysCount} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} op:${optionProfit} c(${callSymbol}):${optionBidPrices[callSymbol]} p(${putSymbol}):${optionBidPrices[putSymbol]}`);
+        }
 
-        if (callProfit <= 0) return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
+        if (basePosition.free != basePosition.loan) await settleAccount(basePosition, bidPrice);
+
+        if (optionProfit <= 0) return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
+        log(`placing straddle ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} op:${optionProfit} c(${callSymbol}):${optionBidPrices[callSymbol]} p(${putSymbol}):${optionBidPrices[putSymbol]}`);
 
         await splitEquity(requiredMargin - availiableUnified);
         expiryTime = await placeStraddle(bidPrice, quantity);
@@ -472,6 +475,7 @@ async function executeTrade({
         bidPrice < upperLimit &&
         askPrice > lowerLimit &&
         sideWaysCount < sidewaysLimit) {
+        log(`outofmoney f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime?.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
         await settleAccount(basePosition, askPrice);
         if (askPrice > upperLimit) {
             spotStrikePrice = upperLimit;
@@ -490,6 +494,7 @@ async function executeTrade({
         let sellPrice = floor(lowerLimit * (1 - slippage), quotePrecision);
         spotStrikePrice = lowerLimit;
         askAboveStrike = true;
+        log(`put lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime?.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
         await immediateSell(symbol, sellAmount, sellPrice);
         sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
@@ -501,6 +506,7 @@ async function executeTrade({
         let buyPrice = floor(upperLimit * (1 + slippage), quotePrecision);
         spotStrikePrice = upperLimit;
         bidBelowStrike = true;
+        log(`call upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} e:${expiryTime?.toISOString()} u:${upperLimit} l:${lowerLimit} c:${callOption?.unrealisedPnl} p:${putOption?.unrealisedPnl}`);
         await immediateBuy(symbol, buyAmount, buyPrice);
         sideWaysCount++;
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
@@ -509,6 +515,7 @@ async function executeTrade({
     if (callOption || putOption) return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike, callSymbol, putSymbol };
 
     if (profit > 0) {
+        log(`take profit f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} `);
         await settleAccount(basePosition, askPrice);
         await moveFundsToSpot();
         askAboveStrike = false;
@@ -524,6 +531,7 @@ async function executeTrade({
         let buyAmount = floor(longAmount, basePrecision);
         let buyPrice = floor(askPrice * (1 + slippage), quotePrecision);
         bidBelowStrike = true;
+        log(`ask upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} `);
         await immediateBuy(symbol, buyAmount, buyPrice);
         sideWaysCount++;
     }
@@ -532,6 +540,7 @@ async function executeTrade({
         let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(bidPrice * (1 - slippage), quotePrecision);
         askAboveStrike = true;
+        log(`bid lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} `);
         await immediateSell(symbol, sellAmount, sellPrice);
         sideWaysCount++;
     }
