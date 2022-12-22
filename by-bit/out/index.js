@@ -292,7 +292,7 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
         let putPrice = await getOptionMarkPrice(putSymbol);
         let optionProfit = netEquity - initialEquity - targetProfit + (callPrice * quantity) + (putPrice * quantity);
         if ((logCount % logFrequency) == 0) {
-            log(`Trading Sideways ${sideWaysCount} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} op:${optionProfit} c(${callSymbol}):${callPrice} p(${putSymbol}):${bidPrice}`);
+            log(`Trading Sideways ${sideWaysCount} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} op:${optionProfit} c(${callSymbol}):${callPrice} p(${putSymbol}):${putPrice}`);
         }
         if (basePosition.free != basePosition.loan)
             await settleAccount(basePosition, bidPrice);
