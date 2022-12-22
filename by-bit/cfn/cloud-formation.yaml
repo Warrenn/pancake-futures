@@ -56,11 +56,6 @@ Parameters:
     Description: The AWS Region for resources
     Default: af-south-1
 
-  ReservationId:
-    Type: String
-    Description: The reservation Id in which to launch the instances
-    Default: 1c445e4f-ce0a-43a3-8151-701bfcf44dc6
-
 Resources:
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -154,9 +149,6 @@ Resources:
         ImageId: !Ref AmiId
         IamInstanceProfile:
           Arn: !GetAtt InstanceProfile.Arn
-        CapacityReservationSpecification:
-          CapacityReservationTarget:
-            CapacityReservationId: !Ref ReservationId
         TagSpecifications:
           - ResourceType: instance
             Tags:
