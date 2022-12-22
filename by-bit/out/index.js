@@ -320,9 +320,9 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
     }
     if (expiryTime && !callOption && !putOption)
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
-    if (askAboveStrike && askPrice < spotStrikePrice)
+    if (askAboveStrike && (askPrice < spotStrikePrice || bidPrice > spotStrikePrice))
         askAboveStrike = false;
-    if (bidBelowStrike && bidPrice > spotStrikePrice)
+    if (bidBelowStrike && (bidPrice > spotStrikePrice || askPrice < spotStrikePrice))
         bidBelowStrike = false;
     if (bidBelowStrike || askAboveStrike)
         return { expiryTime, spotStrikePrice, initialEquity, targetProfit, quantity, sideWaysCount, askAboveStrike, bidBelowStrike };
