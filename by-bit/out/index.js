@@ -273,7 +273,7 @@ async function executeTrade({ expiry, expiryTime, putOption, callOption, spotStr
     }
     else
         logCount++;
-    let deltaProfit = Math.abs((spotStrikePrice * quantity) - (bidPrice * quantity)) - profit;
+    let deltaProfit = Math.abs((spotStrikePrice * quantity) - (bidPrice * quantity)) + profit;
     if (sideWaysCount > sidewaysLimit && deltaProfit > 0 && !expiryTime) {
         log(`Sideways breakout d:${deltaProfit} f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} ab:${askAboveStrike} bp:${bidPrice} bb:${bidBelowStrike} q:${quantity} sp:${spotStrikePrice} sdw:${sideWaysCount} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${(netEquity - initialEquity)} `);
         return { expiryTime, spotStrikePrice: bidPrice, initialEquity, targetProfit, quantity, sideWaysCount: 0, askAboveStrike, bidBelowStrike };
