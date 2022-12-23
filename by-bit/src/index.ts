@@ -295,7 +295,7 @@ async function reconcileLoan(basePosition: Position, quantity: number, price: nu
 
 async function executeTrade({
     strikePrice,
-    quantity,
+    size,
     basePosition,
     quotePosition,
     initialEquity,
@@ -303,7 +303,7 @@ async function executeTrade({
     bidPrice
 }: {
     strikePrice: number,
-    quantity: number,
+    size: number,
     basePosition: Position,
     quotePosition: Position,
     initialEquity: number,
@@ -313,23 +313,23 @@ async function executeTrade({
 
     let netEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
     if ((logCount % logFrequency) == 0) {
-        log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${quantity} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
+        log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
         logCount = 1;
     }
     else logCount++;
 
-    let netPosition = Math.abs(floor(basePosition.free - basePosition.loan, basePrecision));
-    if (bidPrice < strikePrice && askPrice > strikePrice && netPosition > 0.0001) {
-        log(`settle account f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${quantity} np:${netPosition} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
+    let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
+    if (bidPrice < strikePrice && askPrice > strikePrice && Math.abs(netPosition) > 0.0001) {
+        log(`settle account f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} np:${netPosition} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await settleAccount(basePosition, askPrice);
         return;
     }
 
-    let longAmount = floor(quantity - netPosition, basePrecision);
+    let longAmount = floor(size - netPosition, basePrecision);
     if (bidPrice > strikePrice && longAmount > 0) {
         let buyAmount = floor(longAmount, basePrecision);
         let buyPrice = floor(strikePrice * (1 + slippage), quotePrecision);
-        log(`upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${quantity} la:${longAmount} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
+        log(`upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateBuy(symbol, buyAmount, buyPrice);
         return;
     }
@@ -337,7 +337,7 @@ async function executeTrade({
     if (askPrice < strikePrice && basePosition.free > 0) {
         let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(strikePrice * (1 - slippage), quotePrecision);
-        log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${quantity} la:${longAmount} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
+        log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateSell(symbol, sellAmount, sellPrice);
     }
 }
@@ -500,16 +500,16 @@ while (true) {
 
         while (true) {
             var { result: { price: p }, retCode, retMsg } = await client.getLastTradedPrice(symbol);
-            askPrice = floor(p, quotePrecision);
-            if (isNaN(askPrice)) continue;
+            bidPrice = floor(p, quotePrecision);
+            if (isNaN(bidPrice)) continue;
             if (retCode == 0) break;
             logError(`Failed getting price (${retCode}) ${retMsg}`)
         }
 
-        let netPosition = Math.abs(floor(basePosition.free - basePosition.loan, basePrecision));
-        if (!callOption && !putOption && netPosition > 0.0001) await settleAccount(basePosition, askPrice);
+        let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
+        if (!callOption && !putOption && Math.abs(netPosition) > 0.0001) await settleAccount(basePosition, bidPrice);
 
-        initialEquity = calculateNetEquity(basePosition, quotePosition, askPrice);
+        initialEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
 
         while (true) {
             await asyncSleep(100);
@@ -522,9 +522,9 @@ while (true) {
                 optionsNeedUpdate = true;
                 positionsNeedUpdate = true;
 
-                await settleAccount(basePosition, askPrice);
+                await settleAccount(basePosition, bidPrice);
                 await moveFundsToSpot();
-                await reconcileLoan(basePosition, size, askPrice);
+                await reconcileLoan(basePosition, size, bidPrice);
             }
 
             if (positionsNeedUpdate) {
@@ -572,7 +572,7 @@ while (true) {
                 expiryTime = expiry;
             }
 
-            await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, quantity: size, quotePosition, strikePrice });
+            await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition, strikePrice });
         }
     }
     catch (err) {
