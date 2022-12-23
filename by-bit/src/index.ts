@@ -562,7 +562,10 @@ while (true) {
 
             if (strikePrice == 0 || expiryTime == null || size == 0) {
                 let option = (callOption || putOption);
-                if (!option || !expiry) continue;
+                if (!option || !expiry) {
+                    optionsNeedUpdate = true;
+                    continue;
+                }
 
                 strikePrice = option.limit;
                 size = floor(parseFloat(`${option.size || 0}`), optionPrecision);
