@@ -319,22 +319,15 @@ async function executeTrade({
     else logCount++;
 
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
-    if (bidPrice < strikePrice && askPrice > strikePrice && Math.abs(netPosition) > 0.0001) {
-        log(`settle account f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} np:${netPosition} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
-        await settleAccount(basePosition, askPrice);
-        return;
-    }
-
     let longAmount = floor(size - netPosition, basePrecision);
-    if (bidPrice > strikePrice && longAmount > 0) {
-        let buyAmount = floor(longAmount, basePrecision);
+    if (askPrice > strikePrice && longAmount > 0.001) {
         let buyPrice = floor(strikePrice * (1 + slippage), quotePrecision);
         log(`upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
-        await immediateBuy(symbol, buyAmount, buyPrice);
+        await immediateBuy(symbol, longAmount, buyPrice);
         return;
     }
 
-    if (askPrice < strikePrice && basePosition.free > 0) {
+    if (bidPrice < strikePrice && basePosition.free > 0) {
         let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(strikePrice * (1 - slippage), quotePrecision);
         log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
@@ -547,8 +540,8 @@ while (true) {
                 size = floor((tradableEquity * leverage) / ((1 + optionIM) * bidPrice), optionPrecision);
 
                 let requiredMargin = bidPrice * size * optionIM;
-                let netPosition = Math.abs(floor(basePosition.free - basePosition.loan, basePrecision));
-                if (netPosition > 0.0001) await settleAccount(basePosition, bidPrice);
+                let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
+                if (Math.abs(netPosition) > 0.0001) await settleAccount(basePosition, bidPrice);
 
                 await splitEquity(requiredMargin - availiableUnified);
                 await placeStraddle(bidPrice, size);
