@@ -311,7 +311,7 @@ async function moveFundsToSpot() {
         return;
     let amount = floor(coin[0].availableBalance, quotePrecision) - 1;
     positionsNeedUpdate = true;
-    if (amount <= 0)
+    if (amount <= 0.0001)
         return;
     while (true) {
         var { ret_code, ret_msg } = await assetsClient.createInternalTransfer({
