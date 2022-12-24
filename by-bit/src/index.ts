@@ -574,7 +574,7 @@ while (true) {
                 }
 
                 strikePrice = option.limit;
-                size = floor(parseFloat(`${option.size || 0}`), optionPrecision);
+                size = Math.abs(floor(parseFloat(`${option.size || 0}`), optionPrecision));
                 expiryTime = expiry;
             }
 
