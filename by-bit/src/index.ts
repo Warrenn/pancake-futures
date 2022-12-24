@@ -231,10 +231,8 @@ function getOptionSymbols(price: number): { putSymbol: string, callSymbol: strin
     return { putSymbol, callSymbol };
 }
 
-async function placeStraddle(price: number, size: number): Promise<Date | null> {
-    let { putSymbol, callSymbol } = getOptionSymbols(price);
-
-    log(`Placing straddle price:${price} size:${size} put:${putSymbol} call:${callSymbol}`);
+async function placePutOrder(price: number, size: number, putSymbol: string) {
+    log(`Placing put price:${price} size:${size} put:${putSymbol}`);
     var { retCode, retMsg } = await unifiedClient.submitOrder({
         category: 'option',
         orderType: 'Market',
@@ -245,7 +243,11 @@ async function placeStraddle(price: number, size: number): Promise<Date | null> 
         orderLinkId: `${uuid()}`
     });
     if (retCode != 0) logError(`put order failed ${putSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
+    optionsNeedUpdate = true;
+}
 
+async function placeCallOrder(price: number, size: number, callSymbol: string) {
+    log(`Placing call price:${price} size:${size} call:${callSymbol}`);
     var { retCode, retMsg } = await unifiedClient.submitOrder({
         category: 'option',
         orderType: 'Market',
@@ -256,9 +258,7 @@ async function placeStraddle(price: number, size: number): Promise<Date | null> 
         orderLinkId: `${uuid()}`
     });
     if (retCode != 0) logError(`call order failed ${callSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
-
     optionsNeedUpdate = true;
-    return expiryTime;
 }
 
 async function getPositions(): Promise<{ basePosition: Position, quotePosition: Position }> {
@@ -487,9 +487,17 @@ while (true) {
         });
 
         wsSpot.subscribe(['outboundAccountInfo', `bookticker.${symbol}`]);
-
-        ({ basePosition, quotePosition } = await getPositions());
         ({ callOption, putOption, expiry } = await getOptions());
+        ({ basePosition, quotePosition } = await getPositions());
+
+        if (!callOption && !putOption) {
+            await settleAccount(basePosition, bidPrice);
+            await moveFundsToSpot();
+            await reconcileLoan(basePosition, size, bidPrice);
+
+            ({ basePosition, quotePosition } = await getPositions());
+        }
+
 
         while (true) {
             var { result: { price: p }, retCode, retMsg } = await client.getLastTradedPrice(symbol);
@@ -518,19 +526,10 @@ while (true) {
                 await settleAccount(basePosition, bidPrice);
                 await moveFundsToSpot();
                 await reconcileLoan(basePosition, size, bidPrice);
+                continue;
             }
 
-            if (positionsNeedUpdate) {
-                ({ basePosition, quotePosition } = await getPositions());
-                positionsNeedUpdate = false;
-            }
-
-            if (optionsNeedUpdate) {
-                ({ callOption, putOption, expiry } = await getOptions());
-                optionsNeedUpdate = false;
-            }
-
-            if (!expiry) {
+            if (size == 0) {
                 let spotEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
                 let { result: { coin } } = await unifiedClient.getBalances(quoteCurrency);
                 let availiableUnified = (!coin || coin.length == 0) ? 0 : floor(coin[0].availableBalance, quotePrecision);
@@ -544,13 +543,30 @@ while (true) {
                 if (Math.abs(netPosition) > 0.0001) await settleAccount(basePosition, bidPrice);
 
                 await splitEquity(requiredMargin - availiableUnified);
-                await placeStraddle(bidPrice, size);
                 await reconcileLoan(basePosition, size, bidPrice);
-
-                optionsNeedUpdate = true;
                 positionsNeedUpdate = true;
+            }
 
-                continue;
+            if (positionsNeedUpdate) {
+                ({ basePosition, quotePosition } = await getPositions());
+                positionsNeedUpdate = false;
+            }
+
+            if (optionsNeedUpdate) {
+                ({ callOption, putOption, expiry } = await getOptions());
+                optionsNeedUpdate = false;
+            }
+
+            let { callSymbol, putSymbol } = await getOptionSymbols(bidPrice);
+
+            if (!callOption) {
+                await placeCallOrder(bidPrice, size, callSymbol);
+                optionsNeedUpdate = true;
+            }
+
+            if (!putOption) {
+                await placePutOrder(bidPrice, size, putSymbol)
+                optionsNeedUpdate = true;
             }
 
             if (strikePrice == 0 || expiryTime == null || size == 0) {
