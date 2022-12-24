@@ -37,7 +37,6 @@ let
     optionIM: number = 0.285;
 
 let
-    strikePrice: number = 0,
     initialEquity: number = 0,
     size: number = 0,
     currentMoment: Date,
@@ -212,9 +211,8 @@ function getPosition(loanAccountList: Position[], tokenId: string, precision: nu
 }
 
 function getOptionSymbols(price: number): { putSymbol: string, callSymbol: string } {
-    let contractPrice = Math.floor(price / optionInterval) * optionInterval;
-    let halfInterval = optionInterval / 2;
-    let strikePrice = (price % optionInterval) < halfInterval ? contractPrice : contractPrice + optionInterval;
+    let putPrice = Math.floor(price / optionInterval) * optionInterval;
+    let callPrice = putPrice + optionInterval;
 
     let expiryTime = new Date();
     expiryTime.setUTCDate(expiryTime.getUTCDate() + ((expiryTime.getUTCHours() < 8) ? 0 : 1));
@@ -226,8 +224,8 @@ function getOptionSymbols(price: number): { putSymbol: string, callSymbol: strin
     let yearStr = `${expiryTime.getUTCFullYear()}`;
     yearStr = yearStr.substring(yearStr.length - 2);
 
-    let putSymbol = `${baseCurrency}-${expiryTime.getUTCDate()}${months[expiryTime.getUTCMonth()]}${yearStr}-${strikePrice}-P`;
-    let callSymbol = `${baseCurrency}-${expiryTime.getUTCDate()}${months[expiryTime.getUTCMonth()]}${yearStr}-${strikePrice}-C`;
+    let putSymbol = `${baseCurrency}-${expiryTime.getUTCDate()}${months[expiryTime.getUTCMonth()]}${yearStr}-${putPrice}-P`;
+    let callSymbol = `${baseCurrency}-${expiryTime.getUTCDate()}${months[expiryTime.getUTCMonth()]}${yearStr}-${callPrice}-C`;
     return { putSymbol, callSymbol };
 }
 
@@ -294,7 +292,6 @@ async function reconcileLoan(basePosition: Position, quantity: number, price: nu
 }
 
 async function executeTrade({
-    strikePrice,
     size,
     basePosition,
     quotePosition,
@@ -302,7 +299,6 @@ async function executeTrade({
     askPrice,
     bidPrice
 }: {
-    strikePrice: number,
     size: number,
     basePosition: Position,
     quotePosition: Position,
@@ -313,24 +309,24 @@ async function executeTrade({
 
     let netEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
     if ((logCount % logFrequency) == 0) {
-        log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
+        log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
         logCount = 1;
     }
     else logCount++;
 
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
     let longAmount = floor(size - netPosition, basePrecision);
-    if (askPrice > strikePrice && longAmount > 0.001) {
-        let buyPrice = floor(strikePrice * (1 + slippage), quotePrecision);
-        log(`upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
+    if (callOption && askPrice > callOption.limit && longAmount > 0.001) {
+        let buyPrice = floor(callOption?.limit * (1 + slippage), quotePrecision);
+        log(`upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateBuy(symbol, longAmount, buyPrice);
         return;
     }
 
-    if (bidPrice < strikePrice && basePosition.free > 0) {
+    if (putOption && bidPrice < putOption.limit && basePosition.free > 0) {
         let sellAmount = floor(basePosition.free, basePrecision);
-        let sellPrice = floor(strikePrice * (1 - slippage), quotePrecision);
-        log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} sp:${strikePrice} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
+        let sellPrice = floor(putOption.limit * (1 - slippage), quotePrecision);
+        log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateSell(symbol, sellAmount, sellPrice);
     }
 }
@@ -519,7 +515,6 @@ while (true) {
             if (expiryTime && currentMoment > expiryTime) {
                 expiryTime = null;
                 size = 0;
-                strikePrice = 0;
                 optionsNeedUpdate = true;
                 positionsNeedUpdate = true;
 
@@ -566,19 +561,18 @@ while (true) {
                 optionsNeedUpdate = true;
             }
 
-            if (strikePrice == 0 || expiryTime == null || size == 0) {
+            if (expiryTime == null || size == 0) {
                 let option = (callOption || putOption);
                 if (!option || !expiry) {
                     optionsNeedUpdate = true;
                     continue;
                 }
 
-                strikePrice = option.limit;
                 size = Math.abs(floor(parseFloat(`${option.size || 0}`), optionPrecision));
                 expiryTime = expiry;
             }
 
-            await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition, strikePrice });
+            await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition });
         }
     }
     catch (err) {
