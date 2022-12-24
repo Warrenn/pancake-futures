@@ -539,9 +539,6 @@ while (true) {
                 size = floor((tradableEquity * leverage) / ((1 + optionIM) * bidPrice), optionPrecision);
 
                 let requiredMargin = bidPrice * size * optionIM;
-                let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
-                if (Math.abs(netPosition) > 0.0001) await settleAccount(basePosition, bidPrice);
-
                 await splitEquity(requiredMargin - availiableUnified);
                 await reconcileLoan(basePosition, size, bidPrice);
                 positionsNeedUpdate = true;
