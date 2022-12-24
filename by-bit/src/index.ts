@@ -557,7 +557,7 @@ while (true) {
                 optionsNeedUpdate = false;
             }
 
-            let { callSymbol, putSymbol } = await getOptionSymbols(bidPrice);
+            let { callSymbol, putSymbol } = getOptionSymbols(bidPrice);
 
             if (!callOption) {
                 await placeCallOrder(bidPrice, size, callSymbol);
