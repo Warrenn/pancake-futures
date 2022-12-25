@@ -52,6 +52,8 @@ let
     basePosition: Position,
     quotePosition: Position,
     expiry: Date | null = null,
+    askAbovePut: boolean = false,
+    bidBelowCall: boolean = false,
     bidPrice: number = 0,
     askPrice: number = 0,
     logCount: number = 0,
@@ -309,15 +311,30 @@ async function executeTrade({
 
     let netEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
     if ((logCount % logFrequency) == 0) {
-        log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
+        log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} bbc:${bidBelowCall} aap:${askAbovePut} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
         logCount = 1;
     }
     else logCount++;
 
+    if (askAbovePut && putOption && askPrice < putOption.limit) askAbovePut = false;
+    if (bidBelowCall && callOption && bidPrice > callOption.limit) bidBelowCall = false;
+
+    if (askAbovePut || bidBelowCall) return;
+
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
+    if (putOption && callOption &&
+        Math.abs(netPosition) > 0.0001 &&
+        askPrice < callOption.limit &&
+        bidPrice > putOption.limit) {
+        log(`sideways f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
+        await settleAccount(basePosition, bidPrice);
+        return
+    }
+
     let longAmount = floor(size - netPosition, basePrecision);
     if (callOption && askPrice > callOption.limit && longAmount > 0.001) {
-        let buyPrice = floor(callOption?.limit * (1 + slippage), quotePrecision);
+        let buyPrice = floor(callOption.limit * (1 + slippage), quotePrecision);
+        bidBelowCall = true;
         log(`upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateBuy(symbol, longAmount, buyPrice);
         return;
@@ -326,6 +343,7 @@ async function executeTrade({
     if (putOption && bidPrice < putOption.limit && basePosition.free > 0) {
         let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(putOption.limit * (1 - slippage), quotePrecision);
+        askAbovePut = true;
         log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateSell(symbol, sellAmount, sellPrice);
     }
