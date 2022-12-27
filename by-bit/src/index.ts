@@ -302,6 +302,8 @@ async function executeTrade({
     size: number,
     basePosition: Position,
     quotePosition: Position,
+    callOption: OptionPosition | null,
+    putOption: OptionPosition | null,
     initialEquity: number,
     askPrice: number,
     bidPrice: number
@@ -317,9 +319,8 @@ async function executeTrade({
     if (!putOption || !callOption) return;
 
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
-    let strikePrice = (putOption.limit + callOption.limit) / 2;
 
-    if (askPrice > strikePrice && bidPrice < strikePrice && Math.abs(netPosition) > 0.001) {
+    if (askPrice < callOption.limit && bidPrice > putOption.limit && Math.abs(netPosition) > 0.001) {
         settleAccount(basePosition, bidPrice);
         return;
     }
@@ -327,7 +328,6 @@ async function executeTrade({
     let longAmount = floor(size - netPosition, basePrecision);
     if (askPrice > callOption.limit && longAmount > 0.001) {
         let buyPrice = floor(callOption.limit * (1 + slippage), quotePrecision);
-        strikePrice = bidPrice;
         log(`upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateBuy(symbol, longAmount, buyPrice);
         return;
@@ -336,7 +336,6 @@ async function executeTrade({
     if (bidPrice < putOption.limit && basePosition.free > 0) {
         let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(putOption.limit * (1 - slippage), quotePrecision);
-        strikePrice = askPrice;
         log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateSell(symbol, sellAmount, sellPrice);
     }
@@ -583,7 +582,7 @@ while (true) {
                 expiryTime = expiry;
             }
 
-            await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition });
+            await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition, callOption, putOption });
         }
     }
     catch (err) {
