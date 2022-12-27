@@ -12,7 +12,7 @@ const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "
     USDC: 10
 }, credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`, settingsKey = `${process.env.BYBIT_SETTINGS}`, region = `${process.env.BYBIT_REGION}`;
 let slippage = 0, symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, tradeMargin = 0, optionPrecision = 0, quotePrecision = 0, basePrecision = 0, logFrequency = 0, useTestnet = false, leverage = 0, optionIM = 0.285;
-let initialEquity = 0, size = 0, currentMoment, expiryTime = null, client, assetsClient, unifiedClient, wsSpot = null, optionsNeedUpdate = false, positionsNeedUpdate = false, callOption = null, putOption = null, basePosition, quotePosition, expiry = null, askAbovePut = false, bidBelowCall = false, bidPrice = 0, askPrice = 0, logCount = 0, ssm = null;
+let initialEquity = 0, size = 0, currentMoment, expiryTime = null, client, assetsClient, unifiedClient, wsSpot = null, optionsNeedUpdate = false, positionsNeedUpdate = false, callOption = null, putOption = null, basePosition, quotePosition, expiry = null, bidPrice = 0, askPrice = 0, logCount = 0, strikePrice = 0, ssm = null;
 function floor(num, precision = quotePrecision) {
     let exp = Math.pow(10, precision);
     return Math.floor((+num * exp)) / exp;
@@ -226,51 +226,38 @@ async function reconcileLoan(basePosition, quantity, price) {
         logError(`couldn't reconcile loan:${basePosition.loan} free:${basePosition.free} quantity:${quantity} repayment:${repayment} (${retCode}) ${retMsg}`);
     }
 }
-async function executeTrade({ size, basePosition, quotePosition, initialEquity, askPrice, bidPrice }) {
+async function executeTrade({ size, basePosition, quotePosition, initialEquity, askPrice, bidPrice, strikePrice }) {
     let netEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
     if ((logCount % logFrequency) == 0) {
-        log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} bbc:${bidBelowCall} aap:${askAbovePut} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption === null || callOption === void 0 ? void 0 : callOption.symbol}):${callOption === null || callOption === void 0 ? void 0 : callOption.unrealisedPnl} p(${putOption === null || putOption === void 0 ? void 0 : putOption.symbol}):${putOption === null || putOption === void 0 ? void 0 : putOption.unrealisedPnl}`);
+        log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption === null || callOption === void 0 ? void 0 : callOption.symbol}):${callOption === null || callOption === void 0 ? void 0 : callOption.unrealisedPnl} p(${putOption === null || putOption === void 0 ? void 0 : putOption.symbol}):${putOption === null || putOption === void 0 ? void 0 : putOption.unrealisedPnl}`);
         logCount = 1;
     }
     else
         logCount++;
+    if (!putOption || !callOption)
+        return strikePrice;
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
+    if (askPrice > strikePrice && bidPrice < strikePrice && Math.abs(netPosition) > 0.001) {
+        settleAccount(basePosition, bidPrice);
+        return strikePrice;
+    }
     let longAmount = floor(size - netPosition, basePrecision);
-    if (callOption && askPrice > callOption.limit && longAmount > 0.001) {
+    if (askPrice > callOption.limit && longAmount > 0.001) {
         let buyPrice = floor(callOption.limit * (1 + slippage), quotePrecision);
-        bidBelowCall = true;
+        strikePrice = bidPrice;
         log(`upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateBuy(symbol, longAmount, buyPrice);
-        return;
+        return strikePrice;
     }
-    if (putOption && bidPrice < putOption.limit && basePosition.free > 0) {
+    if (bidPrice < putOption.limit && basePosition.free > 0) {
         let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(putOption.limit * (1 - slippage), quotePrecision);
-        askAbovePut = true;
+        strikePrice = askPrice;
         log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateSell(symbol, sellAmount, sellPrice);
-        return;
+        return strikePrice;
     }
-    if (askAbovePut && putOption && askPrice < putOption.limit)
-        askAbovePut = false;
-    if (bidBelowCall && callOption && bidPrice > callOption.limit)
-        bidBelowCall = false;
-    if (askAbovePut || bidBelowCall)
-        return;
-    if (!putOption || !callOption)
-        return;
-    if (Math.abs(netPosition) < 0.0001)
-        return;
-    if (bidPrice < callOption.limit && bidPrice > putOption.limit) {
-        log(`sideways call f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption === null || callOption === void 0 ? void 0 : callOption.symbol}):${callOption === null || callOption === void 0 ? void 0 : callOption.unrealisedPnl} p(${putOption === null || putOption === void 0 ? void 0 : putOption.symbol}):${putOption === null || putOption === void 0 ? void 0 : putOption.unrealisedPnl}`);
-        await settleAccount(basePosition, bidPrice);
-        return;
-    }
-    if (askPrice > putOption.limit && askPrice < callOption.limit) {
-        log(`sideways put f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption === null || callOption === void 0 ? void 0 : callOption.symbol}):${callOption === null || callOption === void 0 ? void 0 : callOption.unrealisedPnl} p(${putOption === null || putOption === void 0 ? void 0 : putOption.symbol}):${putOption === null || putOption === void 0 ? void 0 : putOption.unrealisedPnl}`);
-        await settleAccount(basePosition, bidPrice);
-        return;
-    }
+    return strikePrice;
 }
 async function splitEquity(unifiedAmount) {
     unifiedAmount = floor(unifiedAmount, quotePrecision);
@@ -479,7 +466,7 @@ while (true) {
                 size = Math.abs(floor(parseFloat(`${option.size || 0}`), optionPrecision));
                 expiryTime = expiry;
             }
-            await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition });
+            strikePrice = await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition, strikePrice });
         }
     }
     catch (err) {
