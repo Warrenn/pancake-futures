@@ -55,7 +55,6 @@ let
     bidPrice: number = 0,
     askPrice: number = 0,
     logCount: number = 0,
-    strikePrice: number = 0,
     ssm: AWS.SSM | null = null;
 
 function floor(num: number, precision: number = quotePrecision) {
@@ -298,17 +297,15 @@ async function executeTrade({
     quotePosition,
     initialEquity,
     askPrice,
-    bidPrice,
-    strikePrice
+    bidPrice
 }: {
     size: number,
     basePosition: Position,
     quotePosition: Position,
     initialEquity: number,
     askPrice: number,
-    bidPrice: number,
-    strikePrice: number
-}): Promise<number> {
+    bidPrice: number
+}) {
 
     let netEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
     if ((logCount % logFrequency) == 0) {
@@ -317,13 +314,14 @@ async function executeTrade({
     }
     else logCount++;
 
-    if (!putOption || !callOption) return strikePrice;
+    if (!putOption || !callOption) return;
 
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
+    let strikePrice = (putOption.limit + callOption.limit) / 2;
 
     if (askPrice > strikePrice && bidPrice < strikePrice && Math.abs(netPosition) > 0.001) {
         settleAccount(basePosition, bidPrice);
-        return strikePrice;
+        return;
     }
 
     let longAmount = floor(size - netPosition, basePrecision);
@@ -332,7 +330,7 @@ async function executeTrade({
         strikePrice = bidPrice;
         log(`upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateBuy(symbol, longAmount, buyPrice);
-        return strikePrice;
+        return;
     }
 
     if (bidPrice < putOption.limit && basePosition.free > 0) {
@@ -341,9 +339,7 @@ async function executeTrade({
         strikePrice = askPrice;
         log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateSell(symbol, sellAmount, sellPrice);
-        return strikePrice;
     }
-    return strikePrice;
 }
 
 async function splitEquity(unifiedAmount: number) {
@@ -587,7 +583,7 @@ while (true) {
                 expiryTime = expiry;
             }
 
-            strikePrice = await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition, strikePrice });
+            await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition });
         }
     }
     catch (err) {
