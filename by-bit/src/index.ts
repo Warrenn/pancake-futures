@@ -38,6 +38,7 @@ let
 
 let
     initialEquity: number = 0,
+    strikePrice: number = 0,
     size: number = 0,
     currentMoment: Date,
     expiryTime: Date | null = null,
@@ -295,17 +296,23 @@ async function executeTrade({
     size,
     basePosition,
     quotePosition,
+    callOption,
+    putOption,
     initialEquity,
     askPrice,
-    bidPrice
+    bidPrice,
+    strikePrice
 }: {
     size: number,
     basePosition: Position,
     quotePosition: Position,
+    callOption: OptionPosition | null
+    putOption: OptionPosition | null,
     initialEquity: number,
     askPrice: number,
-    bidPrice: number
-}) {
+    bidPrice: number,
+    strikePrice: number
+}): Promise<number> {
 
     let netEquity = calculateNetEquity(basePosition, quotePosition, bidPrice);
     if ((logCount % logFrequency) == 0) {
@@ -314,14 +321,16 @@ async function executeTrade({
     }
     else logCount++;
 
-    if (!putOption || !callOption) return;
+    if (strikePrice == 0) strikePrice = (bidPrice + askPrice) / 2;
+    if (!putOption || !callOption) return strikePrice;
 
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
-    let strikePrice = (putOption.limit + callOption.limit) / 2;
+    if (bidPrice < putOption.limit && askPrice < putOption.limit) strikePrice = putOption.limit;
+    if (bidPrice > callOption.limit && askPrice > callOption.limit) strikePrice = callOption.limit;
 
     if (askPrice > strikePrice && bidPrice < strikePrice && Math.abs(netPosition) > 0.001) {
         settleAccount(basePosition, bidPrice);
-        return;
+        return strikePrice;
     }
 
     let longAmount = floor(size - netPosition, basePrecision);
@@ -330,7 +339,7 @@ async function executeTrade({
         strikePrice = bidPrice;
         log(`upper f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateBuy(symbol, longAmount, buyPrice);
-        return;
+        return strikePrice;
     }
 
     if (bidPrice < putOption.limit && basePosition.free > 0) {
@@ -339,7 +348,10 @@ async function executeTrade({
         strikePrice = askPrice;
         log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateSell(symbol, sellAmount, sellPrice);
+        return strikePrice;
     }
+
+    return strikePrice;
 }
 
 async function splitEquity(unifiedAmount: number) {
@@ -583,7 +595,7 @@ while (true) {
                 expiryTime = expiry;
             }
 
-            await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition });
+            strikePrice = await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition, strikePrice, callOption, putOption });
         }
     }
     catch (err) {
