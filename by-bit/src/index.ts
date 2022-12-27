@@ -316,24 +316,7 @@ async function executeTrade({
     }
     else logCount++;
 
-    if (askAbovePut && putOption && askPrice < putOption.limit) askAbovePut = false;
-    if (bidBelowCall && callOption && bidPrice > callOption.limit) bidBelowCall = false;
-
-    if (askAbovePut || bidBelowCall) return;
-
     let netPosition = floor(basePosition.free - basePosition.loan, basePrecision);
-
-    if (callOption && Math.abs(netPosition) > 0.0001 && bidPrice < callOption.limit) {
-        log(`sideways call f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
-        await settleAccount(basePosition, bidPrice);
-        return
-    }
-
-    if (putOption && Math.abs(netPosition) > 0.0001 && askPrice > putOption.limit) {
-        log(`sideways put f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
-        await settleAccount(basePosition, bidPrice);
-        return
-    }
 
     let longAmount = floor(size - netPosition, basePrecision);
     if (callOption && askPrice > callOption.limit && longAmount > 0.001) {
@@ -350,6 +333,26 @@ async function executeTrade({
         askAbovePut = true;
         log(`lower f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} la:${longAmount} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)}`);
         await immediateSell(symbol, sellAmount, sellPrice);
+        return;
+    }
+
+    if (askAbovePut && putOption && askPrice < putOption.limit) askAbovePut = false;
+    if (bidBelowCall && callOption && bidPrice > callOption.limit) bidBelowCall = false;
+
+    if (askAbovePut || bidBelowCall) return;
+    if (!putOption || !callOption) return;
+    if (Math.abs(netPosition) < 0.0001) return;
+
+    if (bidPrice < callOption.limit && bidPrice > putOption.limit) {
+        log(`sideways call f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
+        await settleAccount(basePosition, bidPrice);
+        return
+    }
+
+    if (askPrice > putOption.limit && askPrice < callOption.limit) {
+        log(`sideways put f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} q:${size} ne:${netEquity} ie:${initialEquity} gp:${(netEquity - initialEquity)} c(${callOption?.symbol}):${callOption?.unrealisedPnl} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
+        await settleAccount(basePosition, bidPrice);
+        return
     }
 }
 
