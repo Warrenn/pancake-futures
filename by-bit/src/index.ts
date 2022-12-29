@@ -524,13 +524,14 @@ while (true) {
             currentMoment = new Date();
             if (expiryTime && currentMoment > expiryTime) {
                 expiryTime = null;
-                size = 0;
                 optionsNeedUpdate = true;
                 positionsNeedUpdate = true;
 
                 await settleAccount(basePosition, bidPrice);
                 await moveFundsToSpot();
                 await reconcileLoan(basePosition, size, bidPrice);
+
+                size = 0;
                 continue;
             }
 
