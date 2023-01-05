@@ -8,7 +8,6 @@ type Position = { free: number, loan: number, tokenId: string };
 dotenv.config({ override: true });
 
 const
-    months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"],
     minSizes: { [id: string]: number } = {
         ETH: 0.08,
         NEAR: 1,
@@ -33,6 +32,7 @@ let
     leverage: number = 0;
 
 let
+    targetProfit: number = 0,
     initialEquity: number = 0,
     sessionEquity: number = 0,
     strikePrice: number = 0,
@@ -208,7 +208,7 @@ async function getPositions(): Promise<{ basePosition: Position, quotePosition: 
 }
 
 async function reconcileLoan(basePosition: Position, quantity: number, price: number) {
-    if (basePosition.loan == quantity) return;
+    if (Math.abs(basePosition.loan - quantity) < 0.001) return;
     positionsNeedUpdate = true;
 
     if (basePosition.loan < quantity) {
@@ -239,6 +239,7 @@ async function executeTrade({
     initialEquity,
     sessionEquity,
     strikePrice,
+    targetProfit,
     askPrice,
     bidPrice
 }: {
@@ -248,6 +249,7 @@ async function executeTrade({
     initialEquity: number,
     sessionEquity: number,
     strikePrice: number,
+    targetProfit: number,
     askPrice: number,
     bidPrice: number
 }): Promise<{
@@ -259,7 +261,6 @@ async function executeTrade({
 
     let price = (basePosition.free > 0) ? bidPrice : askPrice;
     let netEquity = calculateNetEquity(basePosition, quotePosition, price);
-    let targetProfit = initialEquity * (1 + targetROI);
     let sessionProfit = netEquity - sessionEquity - targetProfit;
 
     if ((logCount % logFrequency) == 0) {
@@ -313,7 +314,7 @@ const { key, secret } = JSON.parse(`${authenticationParameter.Parameter?.Value}`
 
 let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
 ({
-    slippage, baseCurrency, quoteCurrency, leverage,
+    slippage, baseCurrency, quoteCurrency, leverage, targetROI,
     tradeMargin, quotePrecision, basePrecision, logFrequency, useTestnet
 } = JSON.parse(`${settingsParameter.Parameter?.Value}`));
 
@@ -363,6 +364,7 @@ while (true) {
 
             if (size == 0) {
                 let tradableEquity = initialEquity * tradeMargin;
+                targetProfit = tradableEquity * targetROI;
 
                 size = floor((tradableEquity * leverage) / bidPrice, basePrecision);
                 await reconcileLoan(basePosition, size, bidPrice);
@@ -374,7 +376,7 @@ while (true) {
                 positionsNeedUpdate = false;
             }
 
-            ({ sessionEquity, strikePrice } = await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition, strikePrice, sessionEquity }));
+            ({ sessionEquity, strikePrice } = await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition, strikePrice, sessionEquity, targetProfit }));
         }
     }
     catch (err) {
