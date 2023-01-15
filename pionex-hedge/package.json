@@ -10,10 +10,12 @@
   "license": "ISC",
   "dependencies": {
     "aws-sdk": "^2.1295.0",
-    "binance": "^2.2.10",
-    "dotenv": "^16.0.3"
+    "bybit-api": "^3.3.9",
+    "dotenv": "^16.0.3",
+    "uuid": "^9.0.0"
   },
   "devDependencies": {
-    "@types/node": "^18.11.18"
+    "@types/node": "^18.11.18",
+    "@types/uuid": "^9.0.0"
   }
 }
