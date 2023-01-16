@@ -1,0 +1,21 @@
+{
+  "name": "pionex-hedge",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "aws-sdk": "^2.1295.0",
+    "bybit-api": "^3.3.9",
+    "dotenv": "^16.0.3",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.11.18",
+    "@types/uuid": "^9.0.0"
+  }
+}
