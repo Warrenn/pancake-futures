@@ -89,16 +89,16 @@ function getPutSymbol(price: number): {
 async function buyPutOrder(size: number, putSymbol: string) {
     if (size < 0.001) return;
     size = floor(size, optionPrecision);
-    // var { retCode, retMsg } = await unifiedClient.submitOrder({
-    //     category: 'option',
-    //     orderType: 'Market',
-    //     side: 'Buy',
-    //     qty: `${size}`,
-    //     symbol: putSymbol,
-    //     timeInForce: 'ImmediateOrCancel',
-    //     orderLinkId: `${uuid()}`
-    // });
-    // if (retCode != 0) logError(`put order failed ${putSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
+    var { retCode, retMsg } = await unifiedClient.submitOrder({
+        category: 'option',
+        orderType: 'Market',
+        side: 'Buy',
+        qty: `${size}`,
+        symbol: putSymbol,
+        timeInForce: 'ImmediateOrCancel',
+        orderLinkId: `${uuid()}`
+    });
+    if (retCode != 0) logError(`put order failed ${putSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
     optionsNeedUpdate = true;
 }
 
