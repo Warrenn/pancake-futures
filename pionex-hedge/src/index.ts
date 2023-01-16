@@ -238,6 +238,7 @@ while (true) {
                 optionsNeedUpdate = true;
                 ({ putSymbol, strikePrice, expiry } = getPutSymbol(price));
                 putOption = null;
+                optionSize = 0;
 
                 continue;
             }
