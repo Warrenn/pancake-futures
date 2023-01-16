@@ -35,6 +35,7 @@ let
     targetProfit: number = 0,
     initialEquity: number = 0,
     strikePrice: number = 0,
+    sessionEquity: number = 0,
     size: number = 0,
     client: SpotClientV3,
     wsSpot: WebsocketClient | null = null,
@@ -87,8 +88,8 @@ async function immediateSell(symbol: string, orderQty: number, price: number, co
 
 async function immediateBuy(symbol: string, orderQty: number, price: number, quoteCoin: string = quoteCurrency) {
     orderQty = floor(orderQty, basePrecision);
-    if (orderQty <= ((minSizes[quoteCurrency] || 0) / price)) return;
     positionsNeedUpdate = true;
+    if (orderQty <= ((minSizes[quoteCurrency] || 0) / price)) return;
 
     while (true) {
         price = floor(price, quotePrecision)
@@ -180,6 +181,7 @@ function calculateNetEquity(basePosition: Position, quotePosition: Position, pri
 async function settleAccount(position: Position, price: number) {
     log(`Settling account free: ${position.free} loan: ${position.loan} price: ${price}`);
     positionsNeedUpdate = true;
+    if (Math.abs(position.free - position.loan) < 0.001) return;
     if (position.free < position.loan) {
         let buyAmount = floor(position.loan - position.free, basePrecision);
         let buyPrice = floor(price * (1 + slippage), quotePrecision);
@@ -239,7 +241,8 @@ async function executeTrade({
     strikePrice,
     targetProfit,
     askPrice,
-    bidPrice
+    bidPrice,
+    sessionEquity
 }: {
     size: number,
     basePosition: Position,
@@ -248,15 +251,18 @@ async function executeTrade({
     strikePrice: number,
     targetProfit: number,
     askPrice: number,
-    bidPrice: number
+    bidPrice: number,
+    sessionEquity: number
 }): Promise<{
-    strikePrice: number
+    strikePrice: number,
+    sessionEquity: number
 }> {
     if (strikePrice == 0) strikePrice = (bidPrice + askPrice) / 2;
+    if (sessionEquity == 0) sessionEquity = initialEquity;
 
     let price = (basePosition.free > 0) ? bidPrice : askPrice;
     let netEquity = calculateNetEquity(basePosition, quotePosition, price);
-    let profit = netEquity - initialEquity - targetProfit;
+    let profit = netEquity - sessionEquity - targetProfit;
 
     if ((logCount % logFrequency) == 0) {
         log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} `);
@@ -268,8 +274,9 @@ async function executeTrade({
         (profit > 0)) {
         settleAccount(basePosition, bidPrice);
         strikePrice = (bidPrice + askPrice) / 2;
+        sessionEquity = netEquity;
         log(`settle f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} p:${profit}`);
-        return { strikePrice };
+        return { strikePrice, sessionEquity };
     }
 
     let netBasePosition = floor(basePosition.free - basePosition.loan, basePrecision);
@@ -278,17 +285,19 @@ async function executeTrade({
         let buyPrice = floor(strikePrice * (1 + slippage), quotePrecision);
         await immediateBuy(symbol, longAmount, buyPrice);
         log(`long f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} `);
-        return { strikePrice };
+        positionsNeedUpdate = true;
+        return { strikePrice, sessionEquity };
     }
 
-    if (askPrice < strikePrice && basePosition.free > 0) {
+    if (askPrice < strikePrice && basePosition.free > 0.001) {
         let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(strikePrice * (1 - slippage), quotePrecision);
         await immediateSell(symbol, sellAmount, sellPrice);
         log(`short f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} `);
+        positionsNeedUpdate = true;
     }
 
-    return { strikePrice };
+    return { strikePrice, sessionEquity };
 }
 
 function closeWebSocket(socket: WebsocketClient | null) {
@@ -370,7 +379,17 @@ while (true) {
                 positionsNeedUpdate = false;
             }
 
-            ({ strikePrice } = await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition, strikePrice, targetProfit }));
+            ({ strikePrice, sessionEquity } = await executeTrade({
+                size,
+                basePosition,
+                quotePosition,
+                initialEquity,
+                strikePrice,
+                targetProfit,
+                askPrice,
+                bidPrice,
+                sessionEquity
+            }));
         }
     }
     catch (err) {

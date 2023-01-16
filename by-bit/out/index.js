@@ -11,7 +11,7 @@ const minSizes = {
     USDC: 10
 }, credentialsKey = `${process.env.BYBIT_API_CREDENTIALS}`, settingsKey = `${process.env.BYBIT_SETTINGS}`, region = `${process.env.BYBIT_REGION}`;
 let slippage = 0, symbol = '', baseCurrency = '', quoteCurrency = '', targetROI = 0, tradeMargin = 0, quotePrecision = 0, basePrecision = 0, logFrequency = 0, useTestnet = false, leverage = 0;
-let targetProfit = 0, initialEquity = 0, sessionEquity = 0, strikePrice = 0, size = 0, client, wsSpot = null, positionsNeedUpdate = false, basePosition, quotePosition, bidPrice = 0, askPrice = 0, logCount = 0, ssm = null;
+let targetProfit = 0, initialEquity = 0, strikePrice = 0, sessionEquity = 0, size = 0, client, wsSpot = null, positionsNeedUpdate = false, basePosition, quotePosition, bidPrice = 0, askPrice = 0, logCount = 0, ssm = null;
 function floor(num, precision = quotePrecision) {
     let exp = Math.pow(10, precision);
     return Math.floor((+num * exp)) / exp;
@@ -49,9 +49,9 @@ async function immediateSell(symbol, orderQty, price, coin = baseCurrency) {
 }
 async function immediateBuy(symbol, orderQty, price, quoteCoin = quoteCurrency) {
     orderQty = floor(orderQty, basePrecision);
+    positionsNeedUpdate = true;
     if (orderQty <= ((minSizes[quoteCurrency] || 0) / price))
         return;
-    positionsNeedUpdate = true;
     while (true) {
         price = floor(price, quotePrecision);
         log(`immediate buy qty: ${orderQty} at ${price}`);
@@ -132,6 +132,8 @@ function calculateNetEquity(basePosition, quotePosition, price) {
 async function settleAccount(position, price) {
     log(`Settling account free: ${position.free} loan: ${position.loan} price: ${price}`);
     positionsNeedUpdate = true;
+    if (Math.abs(position.free - position.loan) < 0.001)
+        return;
     if (position.free < position.loan) {
         let buyAmount = floor(position.loan - position.free, basePrecision);
         let buyPrice = floor(price * (1 + slippage), quotePrecision);
@@ -180,43 +182,45 @@ async function reconcileLoan(basePosition, quantity, price) {
         logError(`couldn't reconcile loan:${basePosition.loan} free:${basePosition.free} quantity:${quantity} repayment:${repayment} (${retCode}) ${retMsg}`);
     }
 }
-async function executeTrade({ size, basePosition, quotePosition, initialEquity, sessionEquity, strikePrice, targetProfit, askPrice, bidPrice }) {
+async function executeTrade({ size, basePosition, quotePosition, initialEquity, strikePrice, targetProfit, askPrice, bidPrice, sessionEquity }) {
     if (strikePrice == 0)
         strikePrice = (bidPrice + askPrice) / 2;
     if (sessionEquity == 0)
         sessionEquity = initialEquity;
     let price = (basePosition.free > 0) ? bidPrice : askPrice;
     let netEquity = calculateNetEquity(basePosition, quotePosition, price);
-    let sessionProfit = netEquity - sessionEquity - targetProfit;
+    let profit = netEquity - sessionEquity - targetProfit;
     if ((logCount % logFrequency) == 0) {
-        log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} se:${sessionEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} sgp:${netEquity - sessionEquity}`);
+        log(`f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} `);
         logCount = 1;
     }
     else
         logCount++;
     if ((askPrice > strikePrice && bidPrice < strikePrice) ||
-        (sessionProfit > 0)) {
+        (profit > 0)) {
         settleAccount(basePosition, bidPrice);
-        sessionEquity = netEquity;
         strikePrice = (bidPrice + askPrice) / 2;
-        log(`settle f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} se:${sessionEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} sgp:${netEquity - sessionEquity} ssp:${sessionProfit}`);
-        return { sessionEquity, strikePrice };
+        sessionEquity = netEquity;
+        log(`settle f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} p:${profit}`);
+        return { strikePrice, sessionEquity };
     }
     let netBasePosition = floor(basePosition.free - basePosition.loan, basePrecision);
     let longAmount = floor(size - netBasePosition, basePrecision);
     if (bidPrice > strikePrice && longAmount > 0.001) {
         let buyPrice = floor(strikePrice * (1 + slippage), quotePrecision);
         await immediateBuy(symbol, longAmount, buyPrice);
-        log(`long f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} se:${sessionEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} sgp:${netEquity - sessionEquity}`);
-        return { sessionEquity, strikePrice };
+        log(`long f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} `);
+        positionsNeedUpdate = true;
+        return { strikePrice, sessionEquity };
     }
-    if (askPrice < strikePrice && basePosition.free > 0) {
+    if (askPrice < strikePrice && basePosition.free > 0.001) {
         let sellAmount = floor(basePosition.free, basePrecision);
         let sellPrice = floor(strikePrice * (1 - slippage), quotePrecision);
         await immediateSell(symbol, sellAmount, sellPrice);
-        log(`short f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} se:${sessionEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} sgp:${netEquity - sessionEquity}`);
+        log(`short f:${basePosition.free} l:${basePosition.loan} ap:${askPrice} bp:${bidPrice} sp:${strikePrice} q:${size} ne:${netEquity} ie:${initialEquity} tp:${targetProfit} gp:${netEquity - initialEquity} `);
+        positionsNeedUpdate = true;
     }
-    return { sessionEquity, strikePrice };
+    return { strikePrice, sessionEquity };
 }
 function closeWebSocket(socket) {
     try {
@@ -287,7 +291,17 @@ while (true) {
                 ({ basePosition, quotePosition } = await getPositions());
                 positionsNeedUpdate = false;
             }
-            ({ sessionEquity, strikePrice } = await executeTrade({ askPrice, basePosition, bidPrice, initialEquity, size, quotePosition, strikePrice, sessionEquity, targetProfit }));
+            ({ strikePrice, sessionEquity } = await executeTrade({
+                size,
+                basePosition,
+                quotePosition,
+                initialEquity,
+                strikePrice,
+                targetProfit,
+                askPrice,
+                bidPrice,
+                sessionEquity
+            }));
         }
     }
     catch (err) {
