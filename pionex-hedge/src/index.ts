@@ -117,7 +117,7 @@ async function executeTrade({
 }) {
 
     if ((logCount % logFrequency) == 0) {
-        log(`price:${price} sp:${strikePrice} q:${optionSize} p(${putOption?.symbol}):${putOption?.unrealisedPnl}`);
+        log(`price:${price} sp:${strikePrice} s:${optionSize} p(${putSymbol}):${putOption?.unrealisedPnl}`);
         logCount = 1;
     }
     else logCount++;
@@ -126,6 +126,7 @@ async function executeTrade({
     let limit = strikePrice * (1 + safetyMargin);
     if (putOption || price == 0 || price > limit) return;
 
+    log(`buying put ${putSymbol} price:${price} limit:${limit} size:${optionSize})`);
     await buyPutOrder(optionSize, putSymbol);
 }
 

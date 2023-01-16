@@ -1,6 +1,7 @@
 var _a, _b;
 import { setTimeout as asyncSleep } from 'timers/promises';
 import { WebsocketClient, UnifiedMarginClient } from "bybit-api";
+import { v4 as uuid } from 'uuid';
 import AWS from 'aws-sdk';
 import dotenv from "dotenv";
 dotenv.config({ override: true });
@@ -44,16 +45,17 @@ async function buyPutOrder(size, putSymbol) {
     if (size < 0.001)
         return;
     size = floor(size, optionPrecision);
-    // var { retCode, retMsg } = await unifiedClient.submitOrder({
-    //     category: 'option',
-    //     orderType: 'Market',
-    //     side: 'Buy',
-    //     qty: `${size}`,
-    //     symbol: putSymbol,
-    //     timeInForce: 'ImmediateOrCancel',
-    //     orderLinkId: `${uuid()}`
-    // });
-    // if (retCode != 0) logError(`put order failed ${putSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
+    var { retCode, retMsg } = await unifiedClient.submitOrder({
+        category: 'option',
+        orderType: 'Market',
+        side: 'Buy',
+        qty: `${size}`,
+        symbol: putSymbol,
+        timeInForce: 'ImmediateOrCancel',
+        orderLinkId: `${uuid()}`
+    });
+    if (retCode != 0)
+        logError(`put order failed ${putSymbol} ${size} (${retCode}) failed ${retCode} ${retMsg}`);
     optionsNeedUpdate = true;
 }
 async function executeTrade({ optionSize, price, strikePrice, putOption, putSymbol }) {
