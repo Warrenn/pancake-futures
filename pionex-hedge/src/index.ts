@@ -239,7 +239,7 @@ while (true) {
                 continue;
             }
 
-            if (optionSize == 0 && price > 0) optionSize = floor(quoteSize / price, optionPrecision);
+            if (optionSize == 0 && strikePrice > 0) optionSize = floor(quoteSize / strikePrice, optionPrecision);
 
             if (optionsNeedUpdate) {
                 putOption = await getOptions();

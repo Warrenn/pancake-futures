@@ -68,13 +68,13 @@ async function executeTrade({ optionSize, price, strikePrice, putOption, putSymb
     if (!putSymbol || strikePrice == 0)
         ({ putSymbol, strikePrice } = getPutSymbol(price));
     let limit = strikePrice * (1 + safetyMargin);
-    if (putOption || price == 0 || price > limit)
+    if (putOption || price == 0 || limit == 0 || price > limit)
         return;
     log(`buying put ${putSymbol} price:${price} limit:${limit} size:${optionSize})`);
     await buyPutOrder(optionSize, putSymbol);
 }
 async function getOptions() {
-    let { result: { list } } = await unifiedClient.getPositions({ category: "option", baseCoin: baseCurrency }), checkExpression = new RegExp(`^${baseCurrency}-(\\d+)(\\w{3})(\\d{2})-(\\d*)-(P|C)$`), putOption = null, expiry = null;
+    let { result: { list } } = await unifiedClient.getPositions({ category: "option", baseCoin: baseCurrency }), checkExpression = new RegExp(`^${baseCurrency}-(\\d+)(\\w{3})(\\d{2})-(\\d*)-(P|C)$`), putOption = null;
     for (let c = 0; c < (list || []).length; c++) {
         let optionPosition = list[c];
         let matches = optionPosition.symbol.match(checkExpression);
@@ -85,10 +85,8 @@ async function getOptions() {
         optionPosition.limit = parseFloat(matches[4]);
         if (matches[5] == 'P')
             putOption = optionPosition;
-        if (expiry != null)
-            continue;
         let mIndex = months.indexOf(matches[2]);
-        expiry = new Date();
+        let expiry = new Date();
         let newYear = parseInt(`20${matches[3]}`);
         expiry.setUTCDate(parseInt(matches[1]));
         expiry.setUTCHours(8);
@@ -97,8 +95,9 @@ async function getOptions() {
         expiry.setUTCMilliseconds(0);
         expiry.setUTCMonth(mIndex);
         expiry.setUTCFullYear(newYear);
+        optionPosition.expiry = expiry;
     }
-    return { putOption, expiry };
+    return putOption;
 }
 function closeWebSocket(socket) {
     try {
@@ -150,30 +149,32 @@ while (true) {
             }
         });
         wsSpot.subscribe([`bookticker.${symbol}`]);
-        ({ putOption, expiry } = await getOptions());
+        putOption = await getOptions();
         if (putOption) {
             putSymbol = putOption.symbol;
             strikePrice = putOption.limit;
+            expiry = putOption.expiry;
         }
         else {
-            ({ putSymbol, strikePrice } = getPutSymbol(price));
+            ({ putSymbol, strikePrice, expiry } = getPutSymbol(price));
         }
         while (true) {
             await asyncSleep(100);
             currentMoment = new Date();
             if (expiry && currentMoment > expiry) {
-                optionsNeedUpdate = true;
                 ({ putSymbol, strikePrice, expiry } = getPutSymbol(price));
                 putOption = null;
                 optionSize = 0;
                 continue;
             }
-            if (optionSize == 0 && price > 0)
-                optionSize = floor(quoteSize / price, optionPrecision);
+            if (optionSize == 0 && strikePrice > 0)
+                optionSize = floor(quoteSize / strikePrice, optionPrecision);
             if (optionsNeedUpdate) {
-                ({ putOption } = await getOptions());
+                putOption = await getOptions();
                 optionsNeedUpdate = false;
             }
+            if (price < 0.001)
+                continue;
             if (!putSymbol || strikePrice == 0 || expiry == null)
                 ({ putSymbol, strikePrice, expiry } = getPutSymbol(price));
             await executeTrade({
