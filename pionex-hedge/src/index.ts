@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid';
 import AWS from 'aws-sdk';
 import dotenv from "dotenv";
 
-type OptionPosition = { symbol: string, markPrice: string, unrealisedPnl: string, entryPrice: string, size: string, limit: number };
+type OptionPosition = { symbol: string, markPrice: string, unrealisedPnl: string, entryPrice: string, size: string, limit: number, expiry: Date };
 
 dotenv.config({ override: true });
 
@@ -124,21 +124,17 @@ async function executeTrade({
 
     if (!putSymbol || strikePrice == 0) ({ putSymbol, strikePrice } = getPutSymbol(price));
     let limit = strikePrice * (1 + safetyMargin);
-    if (putOption || price == 0 || price > limit) return;
+    if (putOption || price == 0 || limit == 0 || price > limit) return;
 
     log(`buying put ${putSymbol} price:${price} limit:${limit} size:${optionSize})`);
     await buyPutOrder(optionSize, putSymbol);
 }
 
-async function getOptions(): Promise<{
-    putOption: OptionPosition | null,
-    expiry: Date | null
-}> {
+async function getOptions(): Promise<OptionPosition | null> {
     let
         { result: { list } } = await unifiedClient.getPositions({ category: "option", baseCoin: baseCurrency }),
         checkExpression = new RegExp(`^${baseCurrency}-(\\d+)(\\w{3})(\\d{2})-(\\d*)-(P|C)$`),
-        putOption: OptionPosition | null = null,
-        expiry: Date | null = null;
+        putOption: OptionPosition | null = null;
 
     for (let c = 0; c < (list || []).length; c++) {
         let optionPosition = <OptionPosition>list[c];
@@ -149,10 +145,9 @@ async function getOptions(): Promise<{
         optionPosition.limit = parseFloat(matches[4]);
 
         if (matches[5] == 'P') putOption = optionPosition;
-        if (expiry != null) continue;
 
         let mIndex = months.indexOf(matches[2]);
-        expiry = new Date();
+        let expiry = new Date();
         let newYear = parseInt(`20${matches[3]}`);
         expiry.setUTCDate(parseInt(matches[1]));
         expiry.setUTCHours(8);
@@ -161,9 +156,10 @@ async function getOptions(): Promise<{
         expiry.setUTCMilliseconds(0);
         expiry.setUTCMonth(mIndex);
         expiry.setUTCFullYear(newYear);
+        optionPosition.expiry = expiry;
     }
 
-    return { putOption, expiry };
+    return putOption;
 }
 
 function closeWebSocket(socket: WebsocketClient | null) {
@@ -222,12 +218,13 @@ while (true) {
         });
 
         wsSpot.subscribe([`bookticker.${symbol}`]);
-        ({ putOption, expiry } = await getOptions());
+        putOption = await getOptions();
         if (putOption) {
             putSymbol = putOption.symbol;
             strikePrice = putOption.limit;
+            expiry = putOption.expiry;
         } else {
-            ({ putSymbol, strikePrice } = getPutSymbol(price));
+            ({ putSymbol, strikePrice, expiry } = getPutSymbol(price));
         }
 
         while (true) {
@@ -235,7 +232,6 @@ while (true) {
 
             currentMoment = new Date();
             if (expiry && currentMoment > expiry) {
-                optionsNeedUpdate = true;
                 ({ putSymbol, strikePrice, expiry } = getPutSymbol(price));
                 putOption = null;
                 optionSize = 0;
@@ -246,9 +242,11 @@ while (true) {
             if (optionSize == 0 && price > 0) optionSize = floor(quoteSize / price, optionPrecision);
 
             if (optionsNeedUpdate) {
-                ({ putOption } = await getOptions());
+                putOption = await getOptions();
                 optionsNeedUpdate = false;
             }
+
+            if (price < 0.001) continue;
 
             if (!putSymbol || strikePrice == 0 || expiry == null) ({ putSymbol, strikePrice, expiry } = getPutSymbol(price));
 
