@@ -23,7 +23,6 @@ let
     quotePrecision: number = 0,
     logFrequency: number = 0,
     useTestnet: boolean = false,
-    quoteSize: number = 0,
     fallRatio: number = 0,
     safetyMargin: number = 0;
 
@@ -186,7 +185,7 @@ let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
     quotePrecision,
     logFrequency,
     useTestnet,
-    quoteSize,
+    optionSize,
     fallRatio,
     safetyMargin
 } = JSON.parse(`${settingsParameter.Parameter?.Value}`));
@@ -234,12 +233,9 @@ while (true) {
             if (expiry && currentMoment > expiry) {
                 ({ putSymbol, strikePrice, expiry } = getPutSymbol(price));
                 putOption = null;
-                optionSize = 0;
 
                 continue;
             }
-
-            if (optionSize == 0 && strikePrice > 0) optionSize = floor(quoteSize / strikePrice, optionPrecision);
 
             if (optionsNeedUpdate) {
                 putOption = await getOptions();
