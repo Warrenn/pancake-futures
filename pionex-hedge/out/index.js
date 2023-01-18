@@ -6,7 +6,7 @@ import AWS from 'aws-sdk';
 import dotenv from "dotenv";
 dotenv.config({ override: true });
 const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], credentialsKey = `${process.env.PIONEX_API_CREDENTIALS}`, settingsKey = `${process.env.PIONEX_SETTINGS}`, region = `${process.env.PIONEX_REGION}`;
-let symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, optionPrecision = 0, quotePrecision = 0, logFrequency = 0, useTestnet = false, quoteSize = 0, fallRatio = 0, safetyMargin = 0;
+let symbol = '', baseCurrency = '', quoteCurrency = '', optionInterval = 0, optionPrecision = 0, quotePrecision = 0, logFrequency = 0, useTestnet = false, fallRatio = 0, safetyMargin = 0;
 let currentMoment, optionSize = 0, expiry = null, unifiedClient, wsSpot = null, optionsNeedUpdate = false, putOption = null, price = 0, strikePrice = 0, putSymbol = '', logCount = 0, ssm = null;
 function floor(num, precision = quotePrecision) {
     let exp = Math.pow(10, precision);
@@ -122,7 +122,7 @@ let settingsParameter = await ssm.getParameter({ Name: settingsKey }).promise();
     quotePrecision,
     logFrequency,
     useTestnet,
-    quoteSize,
+    optionSize,
     fallRatio,
     safetyMargin
 } = JSON.parse(`${(_b = settingsParameter.Parameter) === null || _b === void 0 ? void 0 : _b.Value}`));
@@ -164,11 +164,8 @@ while (true) {
             if (expiry && currentMoment > expiry) {
                 ({ putSymbol, strikePrice, expiry } = getPutSymbol(price));
                 putOption = null;
-                optionSize = 0;
                 continue;
             }
-            if (optionSize == 0 && strikePrice > 0)
-                optionSize = floor(quoteSize / strikePrice, optionPrecision);
             if (optionsNeedUpdate) {
                 putOption = await getOptions();
                 optionsNeedUpdate = false;
