@@ -2,3 +2,5 @@ can I late buy options cheaply and pay lower price than if bought at the moment
 when the price is high and the option is cheaper than the expected premium buy
 ml modeling to determine if the price dip has momentum
 check the price when its going up and its close to multiple of optionband buy when premium is at its highest
+if start of the day is in coin get the highest strike started with
+if the price is higher than average
