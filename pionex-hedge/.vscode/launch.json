@@ -20,6 +20,23 @@
                 "${workspaceFolder}/out/**/*.js"
             ],
             "console": "internalConsole"
+        },
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "Test",
+            "program": "${workspaceFolder}/src/test.ts",
+            "preLaunchTask": "tsc: build - tsconfig.json",
+            "env": {
+                "AWS_PROFILE": "busyweb-admin",
+                "AWS_SDK_LOAD_CONFIG": "true",
+                "AWS_ACCESS_KEY_ID": "",
+                "AWS_SECRET_ACCESS_KEY": ""
+            },
+            "outFiles": [
+                "${workspaceFolder}/out/**/*.js"
+            ],
+            "console": "internalConsole"
         }
     ]
 }
