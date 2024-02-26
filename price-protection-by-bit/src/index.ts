@@ -3,7 +3,6 @@ import { RestClientV5, WebsocketClient } from 'bybit-api'
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import dotenv from 'dotenv';
 import { round } from './calculations.js';
-import { stat } from 'fs';
 
 type State = {
     bid: number
@@ -36,7 +35,7 @@ type Context = {
     state: State
     settings: Settings
     restClient: RestClientV5
-    process: (context: Context) => Promise<void>
+    execution: (context: Context) => Promise<void>
 }
 
 function orderbookUpdate(data: any, state: State) {
@@ -165,14 +164,14 @@ async function longOTM(context: Context) {
 
     if (havePosition && (threshold === 0 || breakEvenPrice === 0)) {
         let commissionCost = executedPrice * commission;
-        breakEvenPrice = executedPrice + (executedPrice - strikePrice) + (2 * commissionCost);
+        breakEvenPrice = executedPrice + Math.abs(executedPrice - strikePrice) + (2 * commissionCost);
         threshold = breakEvenPrice * (1 + thresholdPercent);
 
         state.breakEvenPrice = breakEvenPrice;
         state.threshold = threshold;
     }
 
-    if (havePosition && orderId === '') {
+    if (havePosition && orderId !== '') {
         //cancel order
         state.orderId = '';
         state.orderPrice = 0;
@@ -186,7 +185,7 @@ async function longOTM(context: Context) {
     }
 
     if (havePosition && threshold > 0 && bid >= threshold) {
-        context.process = longITM;
+        context.execution = longITM;
         state.pastCoolDown = false;
     }
 
@@ -252,7 +251,7 @@ async function longITM(context: Context) {
         state.breakEvenPrice = 0;
         state.threshold = 0;
         state.pastCoolDown = false;
-        context.process = longOTM;
+        context.execution = longOTM;
     }
 }
 
@@ -321,13 +320,13 @@ async function shortOTM(context: Context) {
 
     if (havePosition && (threshold === 0 || breakEvenPrice === 0)) {
         let commissionCost = entryPrice * commission;
-        breakEvenPrice = entryPrice - (strikePrice - entryPrice) - (2 * commissionCost);
+        breakEvenPrice = entryPrice - Math.abs(strikePrice - entryPrice) - (2 * commissionCost);
         threshold = breakEvenPrice * (1 - thresholdPercent);
         state.breakEvenPrice = breakEvenPrice;
         state.threshold = threshold;
     }
 
-    if (havePosition && orderId! == '') {
+    if (havePosition && orderId !== '') {
         //cancel order
         state.orderId = '';
         state.orderPrice = 0;
@@ -342,7 +341,7 @@ async function shortOTM(context: Context) {
 
     if (havePosition && threshold > 0 && ask <= threshold) {
         state.pastCoolDown = false;
-        context.process = shortITM;
+        context.execution = shortITM;
     }
 }
 
@@ -402,7 +401,7 @@ async function shortITM(context: Context) {
 
     let transistionPrice = strikePrice * (1 + thresholdPercent);
     if (!havePosition && bid > transistionPrice) {
-        context.process = shortOTM;
+        context.execution = shortOTM;
         state.pastCoolDown = false;
         state.breakEvenPrice = 0;
         state.threshold = 0;
@@ -461,23 +460,31 @@ let { result: { list: [position] } } = await restClient.getPositionInfo({
     category: 'linear'
 });
 
-console.log(JSON.stringify(position));
+if (position && position.positionValue) {
+    state.position = parseFloat(position.positionValue);
+    state.entryPrice = parseFloat(position.avgPrice);
+}
+
 socketClient.on('update', websocketCallback(state));
 
-//await socketClient.subscribeV5(`orderbook.1.${settings.symbol}`, 'linear');
+await socketClient.subscribeV5(`orderbook.1.${settings.symbol}`, 'linear');
 await socketClient.subscribeV5('execution', 'linear');
 await socketClient.subscribeV5('order', 'linear');
 await socketClient.subscribeV5('position', 'linear');
+
+let execution = settings.direction === 'long' ? longOTM : shortOTM;
+if (state.entryPrice > settings.strikePrice && settings.direction === 'long') execution = longITM;
+if (state.entryPrice < settings.strikePrice && settings.direction === 'short') execution = shortITM;
 
 let context: Context = {
     state,
     settings,
     restClient,
-    process: longOTM
+    execution
 }
 
 while (true) {
-    await context.process(context);
+    await context.execution(context);
     await asyncSleep(10);
 }
 
