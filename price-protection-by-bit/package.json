@@ -12,7 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@aws-sdk/client-cloudwatch-logs": "^3.515.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.521.0",
     "@aws-sdk/client-ssm": "^3.519.0",
     "bybit-api": "^3.9.5",
     "dotenv": "^16.0.3"
