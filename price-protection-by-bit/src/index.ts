@@ -4,6 +4,8 @@ import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import dotenv from 'dotenv';
 import { round } from './calculations.js';
 
+const commission = 0.0002;
+
 type State = {
     bid: number
     ask: number
@@ -40,8 +42,8 @@ type Context = {
 
 function orderbookUpdate(data: any, state: State) {
     if (!data || !data.data || !data.data.b || !data.data.a) return;
-    if (data.data.b.length > 0 && data.data.b[0].length > 0) state.bid = data.data.b[0][0];
-    if (data.data.a.length > 0 && data.data.a[0].length > 0) state.ask = data.data.a[0][0];
+    if (data.data.b.length > 0 && data.data.b[0].length > 0) state.bid = parseFloat(data.data.b[0][0]);
+    if (data.data.a.length > 0 && data.data.a[0].length > 0) state.ask = parseFloat(data.data.a[0][0]);
 }
 
 function positionUpdate(data: any, state: State) {
@@ -101,25 +103,26 @@ async function getSettings({ ssm, name, keyPrefix }: { ssm: SSMClient, name: str
 //OTM long state
 async function longOTM(context: Context) {
     let state = context.state;
-    let { bid, ask, position, orderId, entryPrice: executedPrice, breakEvenPrice, orderPrice, threshold, pastCoolDown } = state;
+    let { bid, ask, position, orderId, entryPrice, breakEvenPrice, orderPrice, threshold, pastCoolDown } = state;
     let { strikePrice, thresholdPercent } = context.settings;
-    let havePosition = position !== 0;
+    let havePosition = position > 0;
 
-    if (!pastCoolDown && ask >= strikePrice) {
+    bid = round(bid, 2);
+    ask = round(ask, 2);
+
+    if (!havePosition && !pastCoolDown && ask >= strikePrice) {
         await asyncSleep(context.settings.coolDown);
         state.pastCoolDown = true;
         return;
     }
 
-    if (ask < strikePrice) {
+    if (!havePosition && ask < strikePrice) {
         state.pastCoolDown = false;
     }
 
     if (!havePosition && ask >= strikePrice && orderId === '' && pastCoolDown) {
         state.orderPrice = ask;
-        //create order
-        let price = `${round(bid, 2)}`;
-        let qty = `${round(context.settings.size, 3)}`;
+        let price = `${state.orderPrice}`;
 
         //create buy order
         let { result: order } = await context.restClient.submitOrder({
@@ -129,7 +132,7 @@ async function longOTM(context: Context) {
             orderType: 'Limit',
             timeInForce: 'PostOnly',
             price,
-            qty
+            qty: `${round(context.settings.size, 3)}`
         });
         state.orderId = order.orderId;
         return;
@@ -137,7 +140,7 @@ async function longOTM(context: Context) {
 
     if (!havePosition && ask >= strikePrice && ask !== orderPrice && orderId !== '' && pastCoolDown) {
         state.orderPrice = ask;
-        let price = `${round(bid, 2)}`;
+        let price = `${state.orderPrice}} `;
         //update order
         let { result: order } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
@@ -163,8 +166,8 @@ async function longOTM(context: Context) {
     }
 
     if (havePosition && (threshold === 0 || breakEvenPrice === 0)) {
-        let commissionCost = executedPrice * commission;
-        breakEvenPrice = executedPrice + Math.abs(executedPrice - strikePrice) + (2 * commissionCost);
+        let commissionCost = entryPrice * commission;
+        breakEvenPrice = entryPrice + Math.abs(entryPrice - strikePrice) + (2 * commissionCost);
         threshold = breakEvenPrice * (1 + thresholdPercent);
 
         state.breakEvenPrice = breakEvenPrice;
@@ -194,14 +197,22 @@ async function longOTM(context: Context) {
 //ITM long state
 async function longITM(context: Context) {
     let state = context.state;
-    let { bid, ask, position, orderId, breakEvenPrice, orderPrice } = state;
+    let { bid, ask, position, orderId, breakEvenPrice, orderPrice, entryPrice } = state;
     let { strikePrice, thresholdPercent } = context.settings;
-    let havePosition = position !== 0;
+    let havePosition = position > 0;
+
+    bid = round(bid, 2);
+    ask = round(ask, 2);
+
+    if (havePosition && !(breakEvenPrice > 0)) {
+        breakEvenPrice = entryPrice + Math.abs(strikePrice - entryPrice) + (2 * (entryPrice * commission));
+        state.breakEvenPrice = breakEvenPrice;
+    }
 
     if (havePosition && bid <= breakEvenPrice && orderId === '') {
         state.orderPrice = bid;
         //create order to sell to close position
-        let price = `${round(bid, 2)}`;
+        let price = `${state.orderPrice}`;
         let qty = `${round(context.settings.size, 3)}`;
 
         //create sell order
@@ -221,7 +232,7 @@ async function longITM(context: Context) {
 
     if (havePosition && bid <= breakEvenPrice && orderId !== '' && bid !== orderPrice) {
         state.orderPrice = bid;
-        let price = `${round(bid, 2)}`;
+        let price = `${state.orderPrice}`;
         //update order
         let { result: order } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
@@ -260,22 +271,24 @@ async function shortOTM(context: Context) {
     let state = context.state;
     let { bid, ask, position, orderId, entryPrice, breakEvenPrice, orderPrice, threshold, pastCoolDown } = state;
     let { strikePrice, thresholdPercent } = context.settings;
-    let havePosition = position !== 0;
+    let havePosition = position > 0;
 
-    if (!pastCoolDown && bid <= strikePrice) {
+    bid = round(bid, 2);
+    ask = round(ask, 2);
+
+    if (!havePosition && !pastCoolDown && bid <= strikePrice) {
         await asyncSleep(context.settings.coolDown);
         state.pastCoolDown = true;
         return;
     }
 
-    if (bid > strikePrice) {
+    if (!havePosition && bid > strikePrice) {
         state.pastCoolDown = false;
     }
 
     if (!havePosition && bid <= strikePrice && orderId === '' && pastCoolDown) {
         state.orderPrice = bid;
-        let price = `${round(bid, 2)}`;
-        let qty = `${round(context.settings.size, 3)}`;
+        let price = `${state.orderPrice}`;
 
         //create sell order
         let { result: order } = await context.restClient.submitOrder({
@@ -285,7 +298,7 @@ async function shortOTM(context: Context) {
             orderType: 'Limit',
             timeInForce: 'PostOnly',
             price,
-            qty
+            qty: `${round(context.settings.size, 3)}`
         });
         state.orderId = order.orderId;
         return;
@@ -293,7 +306,7 @@ async function shortOTM(context: Context) {
 
     if (!havePosition && bid <= strikePrice && bid !== orderPrice && orderId !== '' && pastCoolDown) {
         state.orderPrice = bid;
-        let price = `${round(bid, 2)}`;
+        let price = `${state.orderPrice}`;
         //update order
         let { result: order } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
@@ -352,11 +365,13 @@ async function shortITM(context: Context) {
     let { strikePrice, thresholdPercent } = context.settings;
     let havePosition = position !== 0;
 
+    bid = round(bid, 2);
+    ask = round(ask, 2);
+
     if (havePosition && ask >= breakEvenPrice && orderId === '') {
         state.orderPrice = ask;
         //create order to buy to close position
-        let price = `${round(bid, 2)}`;
-        let qty = `${round(context.settings.size, 3)}`;
+        let price = `${state.orderPrice}`;
 
         //create buy order
         let { result: order } = await context.restClient.submitOrder({
@@ -367,7 +382,7 @@ async function shortITM(context: Context) {
             timeInForce: 'PostOnly',
             reduceOnly: true,
             price,
-            qty
+            qty: `${round(context.settings.size, 3)}`
         });
         state.orderId = order.orderId;
         return;
@@ -375,7 +390,7 @@ async function shortITM(context: Context) {
 
     if (havePosition && ask >= breakEvenPrice && orderId !== '' && ask !== orderPrice) {
         state.orderPrice = ask;
-        let price = `${round(bid, 2)}`;
+        let price = `${state.orderPrice}`;
         //update order
         let { result: order } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
@@ -407,8 +422,6 @@ async function shortITM(context: Context) {
         state.threshold = 0;
     }
 }
-
-const commission = 0.0002;
 
 dotenv.config({ override: true });
 
@@ -465,9 +478,21 @@ if (position && position.positionValue) {
     state.entryPrice = parseFloat(position.avgPrice);
 }
 
+if (state.position > 0 && state.entryPrice > 0 && settings.direction === 'long') {
+    let commissionCost = state.entryPrice * commission;
+    state.breakEvenPrice = state.entryPrice + Math.abs(state.entryPrice - settings.strikePrice) + (2 * commissionCost);
+    state.threshold = state.breakEvenPrice * (1 + settings.thresholdPercent);
+}
+
+if (state.position > 0 && state.entryPrice > 0 && settings.direction === 'short') {
+    let commissionCost = state.entryPrice * commission;
+    state.breakEvenPrice = state.entryPrice - Math.abs(state.entryPrice - settings.strikePrice) - (2 * commissionCost);
+    state.threshold = state.breakEvenPrice * (1 - settings.thresholdPercent);
+}
+
 socketClient.on('update', websocketCallback(state));
 
-await socketClient.subscribeV5(`orderbook.1.${settings.symbol}`, 'linear');
+await socketClient.subscribeV5(`orderbook.1.${settings.symbol} `, 'linear');
 await socketClient.subscribeV5('execution', 'linear');
 await socketClient.subscribeV5('order', 'linear');
 await socketClient.subscribeV5('position', 'linear');
@@ -487,20 +512,3 @@ while (true) {
     await context.execution(context);
     await asyncSleep(10);
 }
-
-
-//order placed
-//position opened
-
-//if the websocket is not closed, you can call client.close() to close it
-//for buy
-// if ask >= strikeprice
-//   if noorder create order to buy at ask
-//   if order exists update price to ask
-// if ask < strikeprice cancel order
-//once order is filled
-// place stop loss order at 1% below the buy price
-// what for price to cross threshold
-// break even price = difference between the executed price and the strike price plus 2 x commission for trade (added to executed price for buy and subtracted from executed price for sell)
-// threshold = 1% above break even price
-// once price crosses threshold place order at break even price
