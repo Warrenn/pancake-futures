@@ -440,7 +440,7 @@ try {
     const ssm = new SSMClient({ region });
     const apiCredentials = await getCredentials({ ssm, name: 'api-credentials', apiCredentialsKeyPrefix: keyPrefix });
     const settings = await getSettings({ ssm, name: 'settings', keyPrefix });
-
+    
     let state: State = {
         bid: 0,
         ask: 0,
@@ -470,7 +470,7 @@ try {
         category: 'linear'
     });
 
-    if (orders.length > 0) {
+    if (orders && orders.length > 0) {
         state.orderId = orders[0].orderId;
         state.orderPrice = parseFloat(orders[0].price);
     }
@@ -509,7 +509,6 @@ try {
     if (state.entryPrice < settings.strikePrice && settings.direction === 'short') execution = shortITM;
 
     await Logger.log(`state: ${JSON.stringify(state)}`);
-    await Logger.log(`settings: ${JSON.stringify(settings)}`);
     await Logger.log(`execution: ${execution.name}`);
 
     let context: Context = {
@@ -525,5 +524,7 @@ try {
     }
 }
 catch (error) {
-    await Logger.log(`error: ${error}`);
+    let err = error as Error;
+    await Logger.log(`error: message:${err.message} stack:${err.stack}`);
+    process.exit(1);
 }

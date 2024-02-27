@@ -242,11 +242,11 @@ Resources:
               -v /logs:/logs:rw \
               -e AWS_REGION="${Region}" \
               -e USE_TESTNET="${UseTestNet}" \
-              -e KEY_PREFIX="/${EnvName}/${AppPrefix}/api-credentials/" \
+              -e KEY_PREFIX="/${EnvName}/${AppPrefix}/" \
               -e LOG_GROUP="${LogGroupName}" \
               "${!repositoryUri}/${RepositoryName}:latest" \
               npm run start
-            halt
+            #halt
 
 Outputs:
   ScalingGroup:
