@@ -10,13 +10,13 @@ const commission = 0.0002;
 type State = {
     bid: number
     ask: number
-    position: number
+    size: number
     orderId: string
     entryPrice: number
     breakEvenPrice: number
     orderPrice: number
     threshold: number
-    pastCoolDown: boolean
+    // pastCoolDown: boolean
 }
 
 type Credentials = {
@@ -49,22 +49,20 @@ function orderbookUpdate(data: any, state: State) {
 
 function positionUpdate(data: any, state: State) {
     if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
-    state.orderId = '';
-    state.position = parseFloat(data.data[0].positionValue);
+    state.size = Math.abs(parseFloat(data.data[0].size));
     state.entryPrice = parseFloat(data.data[0].entryPrice);
-    state.pastCoolDown = false;
+    // state.pastCoolDown = false;
 }
 
 function orderUpdate(data: any, state: State) {
     if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
     state.orderId = data.data[0].orderId;
-    state.pastCoolDown = false;
+    // state.pastCoolDown = false;
 }
 
 function executionUpdate(data: any, state: State) {
     if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
-    state.orderId = '';
-    state.pastCoolDown = false;
+    // state.pastCoolDown = false;
 }
 
 function websocketCallback(state: State): (response: any) => void {
@@ -104,72 +102,76 @@ async function getSettings({ ssm, name, keyPrefix }: { ssm: SSMClient, name: str
 //OTM long state
 async function longOTM(context: Context) {
     let state = context.state;
-    let { bid, ask, position, orderId, entryPrice, breakEvenPrice, orderPrice, threshold, pastCoolDown } = state;
+    let { bid, ask, size, orderId, entryPrice, breakEvenPrice, orderPrice, threshold } = state;
     let { strikePrice, thresholdPercent } = context.settings;
-    let havePosition = position > 0;
+    let havePosition = size >= context.settings.size;
 
-    bid = round(bid, 2);
-    ask = round(ask, 2);
+    let price = round((bid + ask) / 2, 2);
 
-    if (!havePosition && !pastCoolDown && ask >= strikePrice) {
-        await Logger.log(`longOTM: waiting for cool down ask:${ask} strikePrice:${strikePrice} pastCoolDown:${pastCoolDown}`);
-        await asyncSleep(context.settings.coolDown);
-        state.pastCoolDown = true;
+    if (havePosition && orderId !== '') {
+        await context.restClient.cancelOrder({
+            symbol: context.settings.symbol,
+            category: 'linear',
+            orderId
+        });
+        await Logger.log(`longOTM: cancelling order orderId:${orderId}`);
+        state.orderId = '';
         return;
     }
 
-    if (!havePosition && ask < strikePrice) {
-        state.pastCoolDown = false;
+    // if (!havePosition && price < strikePrice) {
+    //     state.pastCoolDown = false;
+    // }
+
+    // if (!havePosition && ask >= strikePrice) {
+    //     await Logger.log(`longOTM: waiting for cool down price:${price} strikePrice:${strikePrice}`);
+    //     await asyncSleep(context.settings.coolDown);
+    //     // state.pastCoolDown = true;
+    //     return;
+    // }
+
+    if (!havePosition && price < strikePrice && orderId !== '') {
+        await context.restClient.cancelOrder({
+            symbol: context.settings.symbol,
+            category: 'linear',
+            orderId
+        });
+        await Logger.log(`longOTM: cancelling order orderId:${orderId}`);
+        state.orderId = '';
+        return;
     }
 
-    if (!havePosition && ask >= strikePrice && orderId === '' && pastCoolDown) {
-        state.orderPrice = ask;
-        let price = `${state.orderPrice}`;
+    if (!havePosition && ask >= strikePrice && orderId === '') {
+        state.orderPrice = price;
         let qty = `${round(context.settings.size, 3)}`;
         let symbol = context.settings.symbol;
 
         //create buy order
-        await Logger.log(`longOTM: buy order price:${price} qty:${qty} symbol:${symbol}`);
         let { result: order } = await context.restClient.submitOrder({
             category: 'linear',
             symbol,
             side: 'Buy',
             orderType: 'Limit',
             timeInForce: 'PostOnly',
-            price,
+            price: `${price}`,
             qty
         });
+        await Logger.log(`longOTM: buy order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
         state.orderId = order.orderId;
         return;
     }
 
-    if (!havePosition && ask >= strikePrice && ask !== orderPrice && orderId !== '' && pastCoolDown) {
-        state.orderPrice = ask;
-        let price = `${state.orderPrice}`;
+    if (!havePosition && ask >= strikePrice && price !== orderPrice && orderId !== '') {
+        state.orderPrice = price;
         //update order
         let { result: order } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
             category: 'linear',
             orderId,
-            price
+            price: `${price}`
         });
         state.orderId = order.orderId;
-        return;
-    }
-
-    if (!havePosition && ask < strikePrice && orderId !== '') {
-        //cancel order
-        let symbol = `${context.settings.symbol}`;
-        state.orderId = '';
-        state.orderPrice = 0;
-        state.pastCoolDown = false;
-
-        await Logger.log(`longOTM: cancelling order orderId:${orderId} symbol:${symbol}`);
-        await context.restClient.cancelOrder({
-            category: 'linear',
-            symbol,
-            orderId
-        });
+        await Logger.log(`longOTM: ammend order price:${price} symbol:${context.settings.symbol} orderId:${order.orderId}`);
         return;
     }
 
@@ -180,12 +182,13 @@ async function longOTM(context: Context) {
 
         state.breakEvenPrice = breakEvenPrice;
         state.threshold = threshold;
+        await Logger.log(`longOTM: breakEvenPrice:${breakEvenPrice} threshold:${threshold}`);
     }
 
-    if (havePosition && threshold > 0 && bid >= threshold) {
+    if (havePosition && threshold > 0 && price >= threshold) {
         context.execution = longITM;
-        state.pastCoolDown = false;
-        await Logger.log(`longOTM: transistioning to long ITM state bid:${bid} threshold:${threshold}`);
+        // state.pastCoolDown = false;
+        await Logger.log(`longOTM: transistioning to long ITM state price:${price} threshold:${threshold}`);
     }
 
 }
@@ -193,26 +196,35 @@ async function longOTM(context: Context) {
 //ITM long state
 async function longITM(context: Context) {
     let state = context.state;
-    let { bid, ask, position, orderId, breakEvenPrice, orderPrice, entryPrice } = state;
+    let { bid, ask, size, orderId, breakEvenPrice, orderPrice, entryPrice } = state;
     let { strikePrice, thresholdPercent } = context.settings;
-    let havePosition = position > 0;
+    let havePosition = size > 0;
 
-    bid = round(bid, 2);
-    ask = round(ask, 2);
+    let price = round((bid + ask) / 2, 2);
 
-    if (havePosition && !(breakEvenPrice > 0)) {
-        breakEvenPrice = entryPrice + Math.abs(strikePrice - entryPrice) + (2 * (entryPrice * commission));
+    if (!havePosition && orderId !== '') {
+        state.orderId = '';
+        await context.restClient.cancelOrder({
+            symbol: context.settings.symbol,
+            category: 'linear',
+            orderId
+        });
+        await Logger.log(`longITM: cancelling order orderId:${orderId}`);
+        return;
+    }
+
+    if (havePosition && breakEvenPrice === 0) {
+        breakEvenPrice = entryPrice + Math.abs(entryPrice - strikePrice) + (2 * (entryPrice * commission));
         state.breakEvenPrice = breakEvenPrice;
+        await Logger.log(`longITM: breakEvenPrice:${breakEvenPrice}`);
     }
 
     if (havePosition && bid <= breakEvenPrice && orderId === '') {
-        state.orderPrice = bid;
+        state.orderPrice = price;
         //create order to sell to close position
-        let price = `${state.orderPrice}`;
         let qty = `${round(context.settings.size, 3)}`;
         let symbol = context.settings.symbol;
 
-        await Logger.log(`longITM: sell order (reduceonly) price:${price} qty:${qty} symbol:${symbol}`);
         let { result: order } = await context.restClient.submitOrder({
             category: 'linear',
             symbol,
@@ -220,48 +232,35 @@ async function longITM(context: Context) {
             orderType: 'Limit',
             timeInForce: 'PostOnly',
             reduceOnly: true,
-            price,
+            price: `${price}`,
             qty
         });
+        await Logger.log(`longITM: sell order (reduceonly) price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
         state.orderId = order.orderId;
         return;
     }
 
-    if (havePosition && bid <= breakEvenPrice && orderId !== '' && bid !== orderPrice) {
-        state.orderPrice = bid;
-        let price = `${state.orderPrice}`;
+    if (havePosition && bid <= breakEvenPrice && orderId !== '' && price !== orderPrice) {
+        state.orderPrice = price;
         //update order
         let { result: order } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
             category: 'linear',
             orderId,
-            price
+            price: `${price}`
         });
         state.orderId = order.orderId;
-        return;
-    }
-
-    if (havePosition && bid > breakEvenPrice && orderId !== '') {
-        let symbol = context.settings.symbol;
-        state.orderId = '';
-        state.orderPrice = 0;
-
-        await Logger.log(`longITM: cancelling order orderId:${orderId} symbol:${symbol}`);
-        await context.restClient.cancelOrder({
-            category: 'linear',
-            symbol,
-            orderId
-        });
+        await Logger.log(`longITM: ammend order price:${price} symbol:${context.settings.symbol} orderId:${order.orderId}`);
         return;
     }
 
     let transistionPrice = strikePrice * (1 - thresholdPercent);
-    if (!havePosition && ask <= transistionPrice) {
-        await Logger.log(`longITM: transistioning to long OTM state ask:${ask} transistionPrice:${transistionPrice}`);
+    if (!havePosition && price <= transistionPrice) {
+        await Logger.log(`longITM: transistioning to long OTM state price:${price} transistionPrice:${transistionPrice}`);
 
         state.breakEvenPrice = 0;
         state.threshold = 0;
-        state.pastCoolDown = false;
+        // state.pastCoolDown = false;
         context.execution = longOTM;
     }
 }
@@ -269,73 +268,75 @@ async function longITM(context: Context) {
 //OTM short state
 async function shortOTM(context: Context) {
     let state = context.state;
-    let { bid, ask, position, orderId, entryPrice, breakEvenPrice, orderPrice, threshold, pastCoolDown } = state;
+    let { bid, ask, size, orderId, entryPrice, breakEvenPrice, orderPrice, threshold } = state;
     let { strikePrice, thresholdPercent } = context.settings;
-    let havePosition = position > 0;
+    let havePosition = size >= context.settings.size;
 
-    bid = round(bid, 2);
-    ask = round(ask, 2);
+    let price = round((bid + ask) / 2, 2);
 
-    if (!havePosition && !pastCoolDown && bid <= strikePrice) {
-        await Logger.log(`shortOTM: waiting for cool down ask:${bid} strikePrice:${strikePrice} pastCoolDown:${pastCoolDown}`);
-        await asyncSleep(context.settings.coolDown);
-        state.pastCoolDown = true;
+    if (havePosition && orderId !== '') {
+        await context.restClient.cancelOrder({
+            symbol: context.settings.symbol,
+            category: 'linear',
+            orderId
+        });
+        await Logger.log(`shortOTM: cancelling order orderId:${orderId}`);
+        state.orderId = '';
         return;
     }
 
-    if (!havePosition && bid > strikePrice) {
-        state.pastCoolDown = false;
+    // if (!havePosition && bid <= strikePrice) {
+    //     await Logger.log(`shortOTM: waiting for cool down price:${price} strikePrice:${strikePrice} bid:${bid}`);
+    //     await asyncSleep(context.settings.coolDown);
+    //     // state.pastCoolDown = true;
+    //     return;
+    // }
+
+    // if (!havePosition && price > strikePrice) {
+    //     state.pastCoolDown = false;
+    // }
+
+    if (!havePosition && price > strikePrice && orderId !== '') {
+        await context.restClient.cancelOrder({
+            symbol: context.settings.symbol,
+            category: 'linear',
+            orderId
+        });
+        await Logger.log(`shortOTM: cancelling order orderId:${orderId}`);
+        state.orderId = '';
+        return;
     }
 
-    if (!havePosition && bid <= strikePrice && orderId === '' && pastCoolDown) {
-        state.orderPrice = bid;
-        let price = `${state.orderPrice}`;
+    if (!havePosition && bid <= strikePrice && orderId === '') {
+        state.orderPrice = price;
         let qty = `${round(context.settings.size, 3)}`
         let symbol = context.settings.symbol
 
         //create sell order
-        await Logger.log(`shortOTM: sell order price:${price} qty:${qty} symbol:${symbol}`);
         let { result: order } = await context.restClient.submitOrder({
             category: 'linear',
             symbol,
             side: 'Sell',
             orderType: 'Limit',
             timeInForce: 'PostOnly',
-            price,
+            price: `${price}`,
             qty
         });
+        await Logger.log(`shortOTM: sell order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
         state.orderId = order.orderId;
         return;
     }
 
-    if (!havePosition && bid <= strikePrice && bid !== orderPrice && orderId !== '' && pastCoolDown) {
-        state.orderPrice = bid;
-        let price = `${state.orderPrice}`;
+    if (!havePosition && bid <= strikePrice && price !== orderPrice && orderId !== '') {
+        state.orderPrice = price;
         //update order
         let { result: order } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
             category: 'linear',
             orderId,
-            price
+            price: `${price}`
         });
         state.orderId = order.orderId;
-        return;
-    }
-
-    if (!havePosition && bid > strikePrice && orderId !== '') {
-        //cancel order
-        //log('canceling order');
-        let symbol = context.settings.symbol;
-        state.orderId = '';
-        state.orderPrice = 0;
-        state.pastCoolDown = false;
-
-        await Logger.log(`shortOTM: cancelling order orderId:${orderId} symbol:${symbol}`);
-        await context.restClient.cancelOrder({
-            category: 'linear',
-            symbol,
-            orderId
-        });
         return;
     }
 
@@ -345,34 +346,43 @@ async function shortOTM(context: Context) {
         threshold = breakEvenPrice * (1 - thresholdPercent);
         state.breakEvenPrice = breakEvenPrice;
         state.threshold = threshold;
+        await Logger.log(`shortOTM: breakEvenPrice:${breakEvenPrice} threshold:${threshold}`);
     }
 
-    if (havePosition && threshold > 0 && ask <= threshold) {
-        state.pastCoolDown = false;
+    if (havePosition && threshold > 0 && price <= threshold) {
+        // state.pastCoolDown = false;
         context.execution = shortITM;
 
-        await Logger.log(`shortOTM: transistioning to short  ITM state ask:${ask} threshold:${threshold}`);
+        await Logger.log(`shortOTM: transistioning to short  ITM state price:${price} threshold:${threshold}`);
     }
 }
 
 //ITM short state
 async function shortITM(context: Context) {
     let state = context.state;
-    let { bid, ask, position, orderId, breakEvenPrice, orderPrice } = state;
+    let { bid, ask, size, orderId, breakEvenPrice, orderPrice } = state;
     let { strikePrice, thresholdPercent } = context.settings;
-    let havePosition = position !== 0;
+    let havePosition = size > 0;
 
-    bid = round(bid, 2);
-    ask = round(ask, 2);
+    let price = round((bid + ask) / 2, 2);
+
+    if (!havePosition && orderId !== '') {
+        await context.restClient.cancelOrder({
+            symbol: context.settings.symbol,
+            category: 'linear',
+            orderId
+        });
+        await Logger.log(`shortITM: cancelling order orderId:${orderId}`);
+        state.orderId = '';
+        return;
+    }
 
     if (havePosition && ask >= breakEvenPrice && orderId === '') {
-        state.orderPrice = ask;
+        state.orderPrice = price;
         //create order to buy to close position
-        let price = `${state.orderPrice}`;
         let qty = `${round(context.settings.size, 3)}`
         let symbol = context.settings.symbol
 
-        await Logger.log(`shortITM: buy order (reduceonly) price:${price} qty:${qty} symbol:${symbol}`);
         let { result: order } = await context.restClient.submitOrder({
             category: 'linear',
             symbol,
@@ -380,47 +390,34 @@ async function shortITM(context: Context) {
             orderType: 'Limit',
             timeInForce: 'PostOnly',
             reduceOnly: true,
-            price,
+            price: `${price}`,
             qty
         });
+
+        await Logger.log(`shortITM: buy order (reduceonly) price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
         state.orderId = order.orderId;
         return;
     }
 
-    if (havePosition && ask >= breakEvenPrice && orderId !== '' && ask !== orderPrice) {
-        state.orderPrice = ask;
-        let price = `${state.orderPrice}`;
+    if (havePosition && ask >= breakEvenPrice && orderId !== '' && price !== orderPrice) {
+        state.orderPrice = price;
         //update order
         let { result: order } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
             category: 'linear',
             orderId,
-            price
+            price: `${price}`
         });
         state.orderId = order.orderId;
         return;
     }
 
-    if (havePosition && ask < breakEvenPrice && orderId !== '') {
-        let symbol = context.settings.symbol;
-        state.orderId = '';
-        state.orderPrice = 0;
-
-        await Logger.log(`shortITM: cancelling order orderId:${orderId} symbol:${symbol}`);
-        await context.restClient.cancelOrder({
-            category: 'linear',
-            symbol: context.settings.symbol,
-            orderId
-        });
-        return;
-    }
-
     let transistionPrice = strikePrice * (1 + thresholdPercent);
-    if (!havePosition && bid > transistionPrice) {
-        await Logger.log(`shortITM: transistioning to short OTM state bid:${bid} transistionPrice:${transistionPrice}`);
+    if (!havePosition && price > transistionPrice) {
+        await Logger.log(`shortITM: transistioning to short OTM state bid:${price} transistionPrice:${transistionPrice}`);
 
         context.execution = shortOTM;
-        state.pastCoolDown = false;
+        // state.pastCoolDown = false;
         state.breakEvenPrice = 0;
         state.threshold = 0;
     }
@@ -440,11 +437,11 @@ try {
     const ssm = new SSMClient({ region });
     const apiCredentials = await getCredentials({ ssm, name: 'api-credentials', apiCredentialsKeyPrefix: keyPrefix });
     const settings = await getSettings({ ssm, name: 'settings', keyPrefix });
-    
+
     let state: State = {
         bid: 0,
         ask: 0,
-        position: 0,
+        size: 0,
         orderId: '',
         entryPrice: 0,
         breakEvenPrice: 0,
@@ -481,17 +478,17 @@ try {
     });
 
     if (position && position.positionValue) {
-        state.position = parseFloat(position.positionValue);
+        state.size = Math.abs(parseFloat(position.size));
         state.entryPrice = parseFloat(position.avgPrice);
     }
 
-    if (state.position > 0 && state.entryPrice > 0 && settings.direction === 'long') {
+    if (state.size > 0 && state.entryPrice > 0 && settings.direction === 'long') {
         let commissionCost = state.entryPrice * commission;
         state.breakEvenPrice = state.entryPrice + Math.abs(state.entryPrice - settings.strikePrice) + (2 * commissionCost);
         state.threshold = state.breakEvenPrice * (1 + settings.thresholdPercent);
     }
 
-    if (state.position > 0 && state.entryPrice > 0 && settings.direction === 'short') {
+    if (state.size > 0 && state.entryPrice > 0 && settings.direction === 'short') {
         let commissionCost = state.entryPrice * commission;
         state.breakEvenPrice = state.entryPrice - Math.abs(state.entryPrice - settings.strikePrice) - (2 * commissionCost);
         state.threshold = state.breakEvenPrice * (1 - settings.thresholdPercent);
@@ -509,6 +506,7 @@ try {
     if (state.entryPrice < settings.strikePrice && settings.direction === 'short') execution = shortITM;
 
     await Logger.log(`state: ${JSON.stringify(state)}`);
+    await Logger.log(`settings: ${JSON.stringify(settings)}`);
     await Logger.log(`execution: ${execution.name}`);
 
     let context: Context = {

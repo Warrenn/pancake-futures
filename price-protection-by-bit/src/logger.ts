@@ -49,7 +49,7 @@ export class Logger {
 
     static stringifyDate(time: number, includeSeconds: boolean = false): string {
         var isoString = (new Date(time)).toISOString();
-        return `${isoString.substring(0, 10)} ${isoString.substring(11, (includeSeconds) ? 19 : 16)}`;
+        return `${isoString.substring(0, 10)}`;
     }
 
     static async log(message: any): Promise<void> {
