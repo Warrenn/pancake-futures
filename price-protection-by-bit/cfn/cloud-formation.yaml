@@ -1,0 +1,253 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Template to deploy price-protection-by-bit futures instance
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W1001
+        - E2507
+        - W3005
+        - E3002
+        - E3012
+
+Parameters:
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: The ID of the VPC
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: The ID of the subnet in the VPC
+
+  AmiId:
+    Description: The name of the AMI id to use for running the price-protection-by-bit futures app
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2"
+  
+  AllocationId:
+    Description: The allocation id of the elastic IP address of the EC2 instance
+    Type: String
+    Default: "eipalloc-0ddd045eb48c1a2d5"
+
+  InstanceType:
+    Description: The instance type the application will be using
+    Type: String
+    Default: t3.micro
+
+  RepositoryName:
+    Type: String
+    Description: The name of the ecr repository
+    Default: price-protection-by-bit
+
+  LogGroupName:
+    Type: String
+    Description: The name of the cloudwatch log group used for logging
+    Default: /dev/price-protection-by-bit
+
+  AppPrefix:
+    Type: String
+    Description: The Prefix used generally by the application
+    Default: price-protection-by-bit
+
+  EnvName:
+    Type: String
+    Description: The environment name
+    Default: dev
+
+  UseTestNet:
+    Type: String
+    Description: whether to use the testnet or not
+    Default: "true"
+
+  Region:
+    Type: String
+    Description: The AWS Region for resources
+    Default: af-south-1
+
+Resources:
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Disable all ingress access
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: "0.0.0.0/0"
+      VpcId: !Ref VPCId
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MaxSize: "1"
+      MinSize: "0"
+      DesiredCapacity: "1"
+      VPCZoneIdentifier:
+        - !Ref SubnetId
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref InstanceRole
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: price-protection-by-bit-role
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: price-protection-by-bit-role-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:AssociateAddress
+                  - ec2:DescribeInstances
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:DescribeImages
+                Resource: !Sub "arn:aws:ecr:*:*:repository/${RepositoryName}"
+              - Effect: Allow
+                Action:
+                  - ecr:DescribeRepositories
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogGroups
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:aws:logs:*:*:log-group:${LogGroupName}:*"
+              - Effect: Allow
+                Action:
+                  - autoscaling:*
+                  - cloudwatch:*
+                  - ec2:Describe*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                  - ssm:ListTagsForResource
+                  - ssm:PutParameter
+                Resource:
+                  - arn:aws:ssm:*:*:parameter/AmazonCloudWatch-*
+                  - !Sub "arn:aws:ssm:*:*:parameter/${EnvName}/${AppPrefix}/*"
+                  - !Sub "arn:aws:ssm:*:*:parameter/${EnvName}/${AppPrefix}"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  - arn:aws:kms:*:*:key/alias/aws/ssm
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: price-protection-by-bit-launch-template
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        ImageId: !Ref AmiId
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: "Name"
+                Value: !Sub "${AppPrefix}-instance"
+              - Key: "env"
+                Value: !Ref EnvName
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            SubnetId: !Ref SubnetId
+            Groups:
+              - !Ref SecurityGroup
+            DeleteOnTermination: true
+            
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash -x
+
+            yum update -y
+            yum install -y aws-cli amazon-cloudwatch-agent
+
+            amazon-linux-extras install docker
+            service docker start
+            usermod -a -G docker ec2-user
+            chkconfig docker on
+
+            mkdir /logs
+            chmod 777 /logs
+
+            cat <<EOF > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent-schema.json
+              {
+                "agent": {
+                  "run_as_user": "root"
+                },
+                "logs": {
+                  "logs_collected": {
+                    "files": {
+                      "collect_list": [
+                        {
+                          "file_path": "/logs/*",
+                          "log_group_name": "${LogGroupName}",
+                          "log_stream_name": "{instance_id}"
+                        }                      
+                      ]
+                    }
+                  }
+                }
+              }
+            EOF
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent-schema.json
+            systemctl restart amazon-cloudwatch-agent
+
+            TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/instance-id)
+
+            aws ec2 associate-address --instance-id ${!INSTANCE_ID}  --allocation-id ${AllocationId} --region ${Region} >> /logs/error.log
+
+            repositoryUri=$(aws ecr describe-repositories --region ${Region} --query "repositories[?repositoryName=='${RepositoryName}'].repositoryUri" --output text | cut -d'/' -f1)
+            aws ecr get-login-password --region ${Region} | docker login --username AWS --password-stdin "${!repositoryUri}" 2>> /logs/error.log
+
+            docker pull "${!repositoryUri}/${RepositoryName}:latest"
+            docker run \
+              -v /logs:/logs:rw \
+              -e AWS_REGION="${Region}" \
+              -e USE_TESTNET="${UseTestNet}" \
+              -e KEY_PREFIX="/${EnvName}/${AppPrefix}/api-credentials/" \
+              -e LOG_GROUP="${LogGroupName}" \
+              "${!repositoryUri}/${RepositoryName}:latest" \
+              npm run start
+            halt
+
+Outputs:
+  ScalingGroup:
+    Value: !Ref AutoScalingGroup
