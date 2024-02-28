@@ -16,6 +16,7 @@ type State = {
     breakEvenPrice: number
     orderPrice: number
     threshold: number
+    executionTime: number
 }
 
 type Credentials = {
@@ -102,8 +103,9 @@ async function getSettings({ ssm, name, keyPrefix }: { ssm: SSMClient, name: str
 async function longOTM(context: Context) {
     let state = context.state;
     let { bid, ask, size, orderId, entryPrice, breakEvenPrice, orderPrice, threshold } = state;
-    let { strikePrice, thresholdPercent } = context.settings;
+    let { strikePrice, thresholdPercent, coolDown } = context.settings;
     let havePosition = size >= context.settings.size;
+    let executionEnabled = state.executionTime > 0 && (new Date()).getTime() > state.executionTime;
 
     let price = round((bid + ask) / 2, 2);
 
@@ -129,7 +131,18 @@ async function longOTM(context: Context) {
         return;
     }
 
-    if (!havePosition && ask >= strikePrice && !orderId) {
+    if (!havePosition && ask >= strikePrice && state.executionTime === 0) {
+        console.log('setting execution time');
+        state.executionTime = (new Date()).getTime() + coolDown;
+        return;
+    }
+
+    if (ask < strikePrice && state.executionTime !== 0) {
+        console.log('clearing execution time');
+        state.executionTime = 0;
+    }
+
+    if (!havePosition && ask >= strikePrice && !orderId && executionEnabled) {
         state.orderPrice = price;
         let qty = `${round(Math.abs(context.settings.size - size), 3)}`;
         let symbol = context.settings.symbol;
@@ -142,6 +155,8 @@ async function longOTM(context: Context) {
             orderType: 'Limit',
             timeInForce: 'PostOnly',
             price: `${price}`,
+            slTriggerBy: 'MarkPrice',
+            stopLoss: `${round(price * (1 - context.settings.slPercent), 2)}`,
             qty
         });
         await Logger.log(`longOTM: buy order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
@@ -149,7 +164,7 @@ async function longOTM(context: Context) {
         return;
     }
 
-    if (!havePosition && ask >= strikePrice && price !== orderPrice && orderId) {
+    if (!havePosition && ask >= strikePrice && price !== orderPrice && orderId && executionEnabled) {
         state.orderPrice = price;
         //update order
         await context.restClient.amendOrder({
@@ -253,8 +268,9 @@ async function longITM(context: Context) {
 async function shortOTM(context: Context) {
     let state = context.state;
     let { bid, ask, size, orderId, entryPrice, breakEvenPrice, orderPrice, threshold } = state;
-    let { strikePrice, thresholdPercent } = context.settings;
+    let { coolDown, strikePrice, thresholdPercent } = context.settings;
     let havePosition = size >= context.settings.size;
+    let executionEnabled = state.executionTime > 0 && (new Date()).getTime() > state.executionTime
 
     let price = round((bid + ask) / 2, 2);
 
@@ -280,7 +296,16 @@ async function shortOTM(context: Context) {
         return;
     }
 
-    if (!havePosition && bid <= strikePrice && !orderId) {
+    if (!havePosition && bid <= strikePrice && state.executionTime === 0) {
+        state.executionTime = (new Date()).getTime() + coolDown;
+        return;
+    }
+
+    if (bid > strikePrice && state.executionTime !== 0) {
+        state.executionTime = 0;
+    }
+
+    if (!havePosition && bid <= strikePrice && !orderId && executionEnabled) {
         state.orderPrice = price;
         let qty = `${round(Math.abs(context.settings.size - size), 3)}`;
         let symbol = context.settings.symbol;
@@ -293,6 +318,7 @@ async function shortOTM(context: Context) {
             orderType: 'Limit',
             timeInForce: 'PostOnly',
             price: `${price}`,
+            stopLoss: `${round(price * (1 + context.settings.slPercent), 2)}`,
             qty
         });
         await Logger.log(`shortOTM: sell order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
@@ -300,7 +326,7 @@ async function shortOTM(context: Context) {
         return;
     }
 
-    if (!havePosition && bid <= strikePrice && price !== orderPrice && orderId) {
+    if (!havePosition && bid <= strikePrice && price !== orderPrice && orderId && executionEnabled) {
         state.orderPrice = price;
         //update order
         await context.restClient.amendOrder({
@@ -417,7 +443,8 @@ try {
         entryPrice: 0,
         breakEvenPrice: 0,
         orderPrice: 0,
-        threshold: 0
+        threshold: 0,
+        executionTime: 0
     } as State;
 
     const socketClient = new WebsocketClient({
