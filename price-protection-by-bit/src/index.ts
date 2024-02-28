@@ -465,6 +465,7 @@ try {
         category: 'linear'
     });
 
+    orders = orders.filter(o => !o.triggerPrice)
     if (orders && orders.length > 0) {
         state.orderId = orders[0].orderId;
         state.orderPrice = parseFloat(orders[0].price);
