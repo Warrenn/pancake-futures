@@ -106,7 +106,8 @@ async function longOTM(context: Context) {
     let { bid, ask, size, orderId, entryPrice, breakEvenPrice, orderPrice, threshold } = state;
     let { strikePrice, thresholdPercent, coolDown } = context.settings;
     let havePosition = size >= context.settings.size;
-    let executionEnabled = state.executionTime > 0 && (new Date()).getTime() > state.executionTime;
+    let coolDownEnabled = coolDown > 0;
+    let executionEnabled = !coolDownEnabled || (state.executionTime > 0 && (new Date()).getTime() > state.executionTime);
 
     let price = round((bid + ask) / 2, 2);
 
@@ -132,13 +133,14 @@ async function longOTM(context: Context) {
         return;
     }
 
-    if (!havePosition && ask >= strikePrice && state.executionTime === 0) {
+    if (!havePosition && ask >= strikePrice && state.executionTime === 0 && coolDownEnabled) {
         state.executionTime = (new Date()).getTime() + coolDown;
         return;
     }
 
-    if (ask < strikePrice && state.executionTime !== 0) {
+    if (state.executionTime !== 0 && (ask < strikePrice || havePosition)) {
         state.executionTime = 0;
+        return;
     }
 
     if (!havePosition && ask >= strikePrice && !orderId && executionEnabled) {
@@ -197,9 +199,10 @@ async function longOTM(context: Context) {
 async function longITM(context: Context) {
     let state = context.state;
     let { bid, ask, size, orderId, breakEvenPrice, orderPrice, entryPrice } = state;
-    let { strikePrice, thresholdPercent } = context.settings;
+    let { coolDown, strikePrice, thresholdPercent } = context.settings;
     let havePosition = size > 0;
-
+    let coolDownEnabled = coolDown > 0;
+    let executionEnabled = !coolDownEnabled || (state.executionTime > 0 && (new Date()).getTime() > state.executionTime);
     let price = round((bid + ask) / 2, 2);
 
     if (!havePosition && orderId) {
@@ -213,13 +216,23 @@ async function longITM(context: Context) {
         return;
     }
 
+    if (havePosition && bid <= breakEvenPrice && state.executionTime === 0 && coolDownEnabled) {
+        state.executionTime = (new Date()).getTime() + coolDown;
+        return;
+    }
+
+    if (state.executionTime !== 0 && (bid > strikePrice || !havePosition)) {
+        state.executionTime = 0;
+        return;
+    }
+
     if (havePosition && breakEvenPrice === 0) {
         breakEvenPrice = entryPrice + Math.abs(entryPrice - strikePrice) + (2 * (entryPrice * commission));
         state.breakEvenPrice = breakEvenPrice;
         await Logger.log(`longITM: breakEvenPrice:${breakEvenPrice}`);
     }
 
-    if (havePosition && bid <= breakEvenPrice && !orderId) {
+    if (havePosition && bid <= breakEvenPrice && !orderId && executionEnabled) {
         state.orderPrice = price;
         //create order to sell to close position
         let qty = `${round(size, 3)}`;
@@ -240,7 +253,7 @@ async function longITM(context: Context) {
         return;
     }
 
-    if (havePosition && bid <= breakEvenPrice && orderId !== '' && price !== orderPrice) {
+    if (havePosition && bid <= breakEvenPrice && orderId !== '' && price !== orderPrice && executionEnabled) {
         state.orderPrice = price;
         //update order
         await context.restClient.amendOrder({
@@ -269,7 +282,8 @@ async function shortOTM(context: Context) {
     let { bid, ask, size, orderId, entryPrice, breakEvenPrice, orderPrice, threshold } = state;
     let { coolDown, strikePrice, thresholdPercent } = context.settings;
     let havePosition = size >= context.settings.size;
-    let executionEnabled = state.executionTime > 0 && (new Date()).getTime() > state.executionTime
+    let coolDownEnabled = coolDown > 0;
+    let executionEnabled = !coolDownEnabled || (state.executionTime > 0 && (new Date()).getTime() > state.executionTime);
 
     let price = round((bid + ask) / 2, 2);
 
@@ -295,13 +309,14 @@ async function shortOTM(context: Context) {
         return;
     }
 
-    if (!havePosition && bid <= strikePrice && state.executionTime === 0) {
+    if (!havePosition && bid <= strikePrice && state.executionTime === 0 && coolDownEnabled) {
         state.executionTime = (new Date()).getTime() + coolDown;
         return;
     }
 
-    if (bid > strikePrice && state.executionTime !== 0) {
+    if (state.executionTime !== 0 && (bid > strikePrice && havePosition)) {
         state.executionTime = 0;
+        return;
     }
 
     if (!havePosition && bid <= strikePrice && !orderId && executionEnabled) {
@@ -358,8 +373,10 @@ async function shortOTM(context: Context) {
 async function shortITM(context: Context) {
     let state = context.state;
     let { bid, ask, size, orderId, breakEvenPrice, orderPrice } = state;
-    let { strikePrice, thresholdPercent } = context.settings;
+    let { coolDown, strikePrice, thresholdPercent } = context.settings;
     let havePosition = size > 0;
+    let coolDownEnabled = coolDown > 0;
+    let executionEnabled = !coolDownEnabled || (state.executionTime > 0 && (new Date()).getTime() > state.executionTime);
 
     let price = round((bid + ask) / 2, 2);
 
@@ -374,7 +391,17 @@ async function shortITM(context: Context) {
         return;
     }
 
-    if (havePosition && ask >= breakEvenPrice && !orderId) {
+    if (havePosition && ask >= breakEvenPrice && state.executionTime === 0 && coolDownEnabled) {
+        state.executionTime = (new Date()).getTime() + coolDown;
+        return;
+    }
+
+    if (state.executionTime !== 0 && (ask < strikePrice && !havePosition)) {
+        state.executionTime = 0;
+        return;
+    }
+
+    if (havePosition && ask >= breakEvenPrice && !orderId && executionEnabled) {
         state.orderPrice = price;
         //create order to buy to close position
         let qty = `${round(size, 3)}`
@@ -396,7 +423,7 @@ async function shortITM(context: Context) {
         return;
     }
 
-    if (havePosition && ask >= breakEvenPrice && orderId && price !== orderPrice) {
+    if (havePosition && ask >= breakEvenPrice && orderId && price !== orderPrice && executionEnabled) {
         state.orderPrice = price;
         //update order
         await context.restClient.amendOrder({
