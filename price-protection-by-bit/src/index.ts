@@ -168,13 +168,19 @@ async function longOTM(context: Context) {
     if (!havePosition && ask >= strikePrice && price !== orderPrice && orderId && executionEnabled) {
         state.orderPrice = price;
         //update order
-        await context.restClient.amendOrder({
+        let { retCode, retMsg } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
             category: 'linear',
             orderId,
             price: `${price}`
         });
-        await Logger.log(`longOTM: ammend order price:${price} symbol:${context.settings.symbol} orderId:${state.orderId}`);
+        if (retCode === 110001 && retMsg === 'order not exists or too late to replace') {
+            state.orderId = '';
+            await Logger.log(`longOTM: update failed orderId:${orderId}`);
+        }
+        else {
+            await Logger.log(`longOTM: ammend order price:${price} symbol:${context.settings.symbol} orderId:${state.orderId}`);
+        }
         return;
     }
 
@@ -256,13 +262,19 @@ async function longITM(context: Context) {
     if (havePosition && bid <= breakEvenPrice && orderId !== '' && price !== orderPrice && executionEnabled) {
         state.orderPrice = price;
         //update order
-        await context.restClient.amendOrder({
+        let { retCode, retMsg } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
             category: 'linear',
             orderId,
             price: `${price}`
         });
-        await Logger.log(`longITM: ammend order price:${price} symbol:${context.settings.symbol} orderId:${state.orderId}`);
+        if (retCode === 110001 && retMsg === 'order not exists or too late to replace') {
+            state.orderId = '';
+            await Logger.log(`longITM: update failed orderId:${orderId}`);
+        }
+        else {
+            await Logger.log(`longITM: ammend order price:${price} symbol:${context.settings.symbol} orderId:${state.orderId}`);
+        }
         return;
     }
 
@@ -343,13 +355,19 @@ async function shortOTM(context: Context) {
     if (!havePosition && bid <= strikePrice && price !== orderPrice && orderId && executionEnabled) {
         state.orderPrice = price;
         //update order
-        await context.restClient.amendOrder({
+        let { retCode, retMsg } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
             category: 'linear',
             orderId,
             price: `${price}`
         });
-        await Logger.log(`shortOTM: ammend order price:${price} symbol:${context.settings.symbol} orderId:${state.orderId}`);
+        if (retCode === 110001 && retMsg === 'order not exists or too late to replace') {
+            state.orderId = '';
+            await Logger.log(`shortOTM: update failed orderId:${orderId}`);
+        }
+        else {
+            await Logger.log(`shortOTM: ammend order price:${price} symbol:${context.settings.symbol} orderId:${state.orderId}`);
+        }
         return;
     }
 
@@ -426,13 +444,20 @@ async function shortITM(context: Context) {
     if (havePosition && ask >= breakEvenPrice && orderId && price !== orderPrice && executionEnabled) {
         state.orderPrice = price;
         //update order
-        await context.restClient.amendOrder({
+
+        let { retCode, retMsg } = await context.restClient.amendOrder({
             symbol: context.settings.symbol,
             category: 'linear',
             orderId,
             price: `${price}`
         });
-        await Logger.log(`shortITM: ammend order price:${price} symbol:${context.settings.symbol} orderId:${state.orderId}`);
+        if (retCode === 110001 && retMsg === 'order not exists or too late to replace') {
+            state.orderId = '';
+            await Logger.log(`shortITM: update failed orderId:${orderId}`);
+        }
+        else {
+            await Logger.log(`shortITM: ammend order price:${price} symbol:${context.settings.symbol} orderId:${state.orderId}`);
+        }
         return;
     }
 
