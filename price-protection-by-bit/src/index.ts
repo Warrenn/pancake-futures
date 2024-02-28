@@ -55,6 +55,7 @@ function positionUpdate(data: any, state: State) {
 
 function orderUpdate(data: any, state: State) {
     if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
+    if (data.data[0].stopOrderType !== '') return;
     switch (data.data[0].orderStatus) {
         case 'Cancelled':
         case 'Rejected':
