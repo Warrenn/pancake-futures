@@ -132,13 +132,11 @@ async function longOTM(context: Context) {
     }
 
     if (!havePosition && ask >= strikePrice && state.executionTime === 0) {
-        console.log('setting execution time');
         state.executionTime = (new Date()).getTime() + coolDown;
         return;
     }
 
     if (ask < strikePrice && state.executionTime !== 0) {
-        console.log('clearing execution time');
         state.executionTime = 0;
     }
 
