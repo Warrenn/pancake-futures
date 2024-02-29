@@ -551,8 +551,8 @@ try {
     await socketClient.subscribeV5('position', 'linear');
 
     let execution = settings.direction === 'long' ? longOTM : shortOTM;
-    if (state.entryPrice > settings.strikePrice && settings.direction === 'long') execution = longITM;
-    if (state.entryPrice < settings.strikePrice && settings.direction === 'short') execution = shortITM;
+    if (state.entryPrice > 0 && state.entryPrice > settings.strikePrice && settings.direction === 'long') execution = longITM;
+    if (state.entryPrice > 0 && state.entryPrice < settings.strikePrice && settings.direction === 'short') execution = shortITM;
 
     await Logger.log(`state: ${JSON.stringify(state)}`);
     await Logger.log(`settings: ${JSON.stringify(settings)}`);
