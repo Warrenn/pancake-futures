@@ -28,9 +28,9 @@ export class Logger {
         this.previousMessage = message;
 
         console.log(message);
-        if (process.env.LOG_FOLDER) {
-            let filePath = `${process.env.LOG_FOLDER}${filename}.log`
-            await fs.appendFile(filePath, message + "\r", { 'encoding': 'utf-8' });
+        if (process.env.LOG_FILE) {
+            let logfilename = process.env.LOG_FILE.replace(/\.log$/g, `.${filename.toString()}.log`);
+            await fs.appendFile(logfilename, message + "\r", { 'encoding': 'utf-8' });
         }
     }
 }

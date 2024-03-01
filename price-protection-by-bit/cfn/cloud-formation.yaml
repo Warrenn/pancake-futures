@@ -243,7 +243,7 @@ Resources:
               -e AWS_REGION="${Region}" \
               -e USE_TESTNET="${UseTestNet}" \
               -e KEY_PREFIX="/${EnvName}/${AppPrefix}/" \
-              -e LOG_FOLDER="/logs/" \
+              -e LOG_FILE="/logs/logfile.log" \
               "${!repositoryUri}/${RepositoryName}:latest" \
               npm run start
             #halt
