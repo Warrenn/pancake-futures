@@ -239,14 +239,25 @@ Resources:
 
             docker pull "${!repositoryUri}/${RepositoryName}:latest"
             docker run \
+              -d \
+              -n short \
               -v /logs:/logs:rw \
               -e AWS_REGION="${Region}" \
               -e USE_TESTNET="${UseTestNet}" \
-              -e KEY_PREFIX="/${EnvName}/${AppPrefix}/" \
-              -e LOG_FILE="/logs/logfile.log" \
+              -e KEY_PREFIX="/${EnvName}/${AppPrefix}/short/" \
+              -e LOG_FILE="/logs/short.log" \
               "${!repositoryUri}/${RepositoryName}:latest" \
               npm run start
-            #halt
+            docker run \
+              -d \
+              -n long \
+              -v /logs:/logs:rw \
+              -e AWS_REGION="${Region}" \
+              -e USE_TESTNET="${UseTestNet}" \
+              -e KEY_PREFIX="/${EnvName}/${AppPrefix}/long/" \
+              -e LOG_FILE="/logs/long.log" \
+              "${!repositoryUri}/${RepositoryName}:latest" \
+              npm run start
 
 Outputs:
   ScalingGroup:
