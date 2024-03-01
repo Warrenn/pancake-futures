@@ -473,7 +473,7 @@ async function shortITM(context: Context) {
 
 dotenv.config({ override: true });
 
-await Logger.setLoggerFundingRound((new Date()).getTime());
+await Logger.logVersion();
 await Logger.log('starting');
 
 const
