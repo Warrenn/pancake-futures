@@ -21,16 +21,17 @@ export class Logger {
     static async log(message: any): Promise<void> {
         if (!message) return;
         message = `${message}`;
-        let timestamp = (new Date()).getTime();
-        let filename = timestamp - (timestamp % 86400000);
+
 
         if (this.previousMessage == message) return;
         this.previousMessage = message;
 
         console.log(message);
         if (process.env.LOG_FILE) {
-            let logfilename = process.env.LOG_FILE.replace(/\.log$/g, `.${filename.toString()}.log`);
-            await fs.appendFile(logfilename, message + "\r", { 'encoding': 'utf-8' });
+            let timestamp = (new Date()).getTime();
+            let filetime = timestamp - (timestamp % 86400000);
+            let logfilename = process.env.LOG_FILE.replace(/\.log$/g, `.${filetime.toString()}.log`);
+            await fs.appendFile(logfilename, `${process.env.LOG_FILE}:${message}\r\n`, { 'encoding': 'utf-8' });
         }
     }
 }
