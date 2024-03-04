@@ -191,7 +191,7 @@ async function longOTM(context: Context) {
 
     if (havePosition && (threshold === 0 || breakEvenPrice === 0)) {
         let commissionCost = entryPrice * commission;
-        breakEvenPrice = entryPrice + Math.abs(entryPrice - strikePrice) + (2 * commissionCost);
+        breakEvenPrice = entryPrice + (2 * commissionCost);
         threshold = breakEvenPrice * (1 + thresholdPercent);
 
         state.breakEvenPrice = breakEvenPrice;
@@ -238,7 +238,7 @@ async function longITM(context: Context) {
     }
 
     if (havePosition && breakEvenPrice === 0) {
-        breakEvenPrice = entryPrice + Math.abs(entryPrice - strikePrice) + (2 * (entryPrice * commission));
+        breakEvenPrice = entryPrice + (2 * (entryPrice * commission));
         state.breakEvenPrice = breakEvenPrice;
         await Logger.log(`longITM: breakEvenPrice:${breakEvenPrice}`);
     }
@@ -378,7 +378,7 @@ async function shortOTM(context: Context) {
 
     if (havePosition && (threshold === 0 || breakEvenPrice === 0)) {
         let commissionCost = entryPrice * commission;
-        breakEvenPrice = entryPrice - Math.abs(strikePrice - entryPrice) - (2 * commissionCost);
+        breakEvenPrice = entryPrice - (2 * commissionCost);
         threshold = breakEvenPrice * (1 - thresholdPercent);
         state.breakEvenPrice = breakEvenPrice;
         state.threshold = threshold;
@@ -395,7 +395,7 @@ async function shortOTM(context: Context) {
 //ITM short state
 async function shortITM(context: Context) {
     let state = context.state;
-    let { bid, ask, size, orderId, breakEvenPrice, orderPrice } = state;
+    let { bid, ask, size, orderId, breakEvenPrice, orderPrice, entryPrice } = state;
     let { coolDown, strikePrice, thresholdPercent } = context.settings;
     let havePosition = size > 0;
     let coolDownEnabled = coolDown > 0;
@@ -422,6 +422,12 @@ async function shortITM(context: Context) {
     if (state.executionTime !== 0 && (ask < strikePrice && !havePosition)) {
         state.executionTime = 0;
         return;
+    }
+
+    if (havePosition && breakEvenPrice === 0) {
+        breakEvenPrice = entryPrice + (2 * (entryPrice * commission));
+        state.breakEvenPrice = breakEvenPrice;
+        await Logger.log(`longITM: breakEvenPrice:${breakEvenPrice}`);
     }
 
     if (havePosition && ask >= breakEvenPrice && !orderId && executionEnabled) {
@@ -539,13 +545,13 @@ try {
 
     if (state.size > 0 && state.entryPrice > 0 && settings.direction === 'long') {
         let commissionCost = state.entryPrice * commission;
-        state.breakEvenPrice = state.entryPrice + Math.abs(state.entryPrice - settings.strikePrice) + (2 * commissionCost);
+        state.breakEvenPrice = state.entryPrice + (2 * commissionCost);
         state.threshold = state.breakEvenPrice * (1 + settings.thresholdPercent);
     }
 
     if (state.size > 0 && state.entryPrice > 0 && settings.direction === 'short') {
         let commissionCost = state.entryPrice * commission;
-        state.breakEvenPrice = state.entryPrice - Math.abs(state.entryPrice - settings.strikePrice) - (2 * commissionCost);
+        state.breakEvenPrice = state.entryPrice - (2 * commissionCost);
         state.threshold = state.breakEvenPrice * (1 - settings.thresholdPercent);
     }
 
