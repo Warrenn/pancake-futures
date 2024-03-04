@@ -44,7 +44,7 @@ Parameters:
   LogGroupName:
     Type: String
     Description: The name of the cloudwatch log group used for logging
-    Default: /dev/price-protection-by-bit
+    Default: /live/price-protection-by-bit
 
   AppPrefix:
     Type: String
@@ -54,7 +54,7 @@ Parameters:
   EnvName:
     Type: String
     Description: The environment name
-    Default: dev
+    Default: live
 
   UseTestNet:
     Type: String
@@ -240,7 +240,7 @@ Resources:
             docker pull "${!repositoryUri}/${RepositoryName}:latest"
             docker run \
               -d \
-              -n short \
+              --name short \
               -v /logs:/logs:rw \
               -e AWS_REGION="${Region}" \
               -e USE_TESTNET="${UseTestNet}" \
@@ -250,7 +250,7 @@ Resources:
               npm run start
             docker run \
               -d \
-              -n long \
+              --name long \
               -v /logs:/logs:rw \
               -e AWS_REGION="${Region}" \
               -e USE_TESTNET="${UseTestNet}" \

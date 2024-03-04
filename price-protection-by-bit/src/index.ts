@@ -41,21 +41,26 @@ type Context = {
     execution: (context: Context) => Promise<void>
 }
 
-function orderbookUpdate(data: any, state: State) {
+function orderbookUpdate(data: any, state: State, settings: Settings) {
     if (!data || !data.data || !data.data.b || !data.data.a) return;
+    let topicParts = data.topic.split('.');
+    if (!topicParts || topicParts.length !== 3) return;
+    if (topicParts[2] !== settings.symbol) return;
     if (data.data.b.length > 0 && data.data.b[0].length > 0) state.bid = parseFloat(data.data.b[0][0]);
     if (data.data.a.length > 0 && data.data.a[0].length > 0) state.ask = parseFloat(data.data.a[0][0]);
 }
 
-function positionUpdate(data: any, state: State) {
+function positionUpdate(data: any, state: State, settings: Settings) {
     if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
+    if (data.data[0].symbol !== settings.symbol) return;
     state.size = Math.abs(parseFloat(data.data[0].size));
     state.entryPrice = parseFloat(data.data[0].entryPrice);
 }
 
-function orderUpdate(data: any, state: State) {
+function orderUpdate(data: any, state: State, settings: Settings) {
     if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
     if (data.data[0].stopOrderType !== '') return;
+    if (data.data[0].symbol !== settings.symbol) return;
     switch (data.data[0].orderStatus) {
         case 'Cancelled':
         case 'Rejected':
@@ -69,20 +74,20 @@ function orderUpdate(data: any, state: State) {
     }
 }
 
-function websocketCallback(state: State): (response: any) => void {
+function websocketCallback(state: State, settings: Settings): (response: any) => void {
     return (data) => {
         if (!data.topic) return;
         let topic = data.topic.split('.');
         if (topic.length < 0) return;
         switch (topic[0]) {
             case 'orderbook':
-                orderbookUpdate(data, state);
+                orderbookUpdate(data, state, settings);
                 break;
             case 'position':
-                positionUpdate(data, state);
+                positionUpdate(data, state, settings);
                 break;
             case 'order':
-                orderUpdate(data, state);
+                orderUpdate(data, state, settings);
                 break;
         }
     }
