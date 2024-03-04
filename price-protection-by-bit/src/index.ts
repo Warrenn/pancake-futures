@@ -549,7 +549,7 @@ try {
         state.threshold = state.breakEvenPrice * (1 - settings.thresholdPercent);
     }
 
-    socketClient.on('update', websocketCallback(state));
+    socketClient.on('update', websocketCallback(state, settings));
 
     await socketClient.subscribeV5(`orderbook.1.${settings.symbol}`, 'linear');
     await socketClient.subscribeV5('order', 'linear');
