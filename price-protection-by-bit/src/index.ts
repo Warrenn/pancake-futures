@@ -129,8 +129,7 @@ async function getSettings({ ssm, name, keyPrefix }: { ssm: SSMClient, name: str
 async function tradingStrategy(context: Context) {
     let { state, settings, restClient } = context;
     let { bid, ask, price, side, size, long, short, entryPrice, bounceCount, sellPrice, buyPrice } = state;
-    // let overbought = size > settings.size && side === 'Buy' && price > settings.longStrikePrice;
-    // let oversold = size > settings.size && side === 'Sell' && price < settings.shortStrikePrice;
+
     let holdingLong = side === 'Buy' && size > 0;
     let holdingShort = side === 'Sell' && size > 0;
     let noPosition = size === 0;
@@ -175,14 +174,14 @@ async function tradingStrategy(context: Context) {
         long.entryPrice = entryPrice;
         long.breakEvenPrice = entryPrice + (entryPrice * 2 * commission);
         long.threshold = long.breakEvenPrice * (1 + settings.thresholdPercent);
-        await Logger.log(`calculating long breakEvenPrice:${long.breakEvenPrice} and threshold:${long.threshold} new strike:${entryPrice}`);
+        await Logger.log(`calculating long breakEvenPrice:${long.breakEvenPrice} and threshold:${long.threshold} entryPrice:${entryPrice}`);
     }
 
     if (short.entryPrice !== entryPrice && holdingShort) {
         short.entryPrice = entryPrice;
         short.breakEvenPrice = entryPrice - (entryPrice * 2 * commission);
         short.threshold = short.breakEvenPrice * (1 - settings.thresholdPercent);
-        await Logger.log(`calculating short breakEvenPrice:${short.breakEvenPrice} and threshold:${short.threshold} new strike:${entryPrice}`);
+        await Logger.log(`calculating short breakEvenPrice:${short.breakEvenPrice} and threshold:${short.threshold} entryPrice:${entryPrice}`);
     }
 
     let mustSell = bid < state.sellPrice && !shortFilled;
