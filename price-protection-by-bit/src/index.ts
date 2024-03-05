@@ -17,6 +17,7 @@ type State = {
     size: number
     entryPrice: number
     side: 'Buy' | 'Sell' | 'None'
+    bounceCount: number
     long: DirectionState
     short: DirectionState
 }
@@ -44,7 +45,7 @@ type Settings = {
     longStrikePrice: number
     shortStrikePrice: number
     thresholdPercent: number
-    maxLossPercent: number
+    maxBounceCount: number
     symbol: string
     size: number
 }
@@ -124,7 +125,7 @@ async function getSettings({ ssm, name, keyPrefix }: { ssm: SSMClient, name: str
 
 async function tradingStrategy(context: Context) {
     let { state, settings, restClient } = context;
-    let { bid, ask, price, side, size, long, short, entryPrice } = state;
+    let { bid, ask, price, side, size, long, short, entryPrice, bounceCount } = state;
     let overbought = size > settings.size && side === 'Buy' && price > settings.longStrikePrice;
     let oversold = size > settings.size && side === 'Sell' && price < settings.shortStrikePrice;
     let holdingLong = side === 'Buy' && size > 0;
@@ -196,13 +197,17 @@ async function tradingStrategy(context: Context) {
 
     let orderSize = settings.size;
     let reduceOnly = false;
-    if (mustSell && holdingLong) orderSize += size;
+    if (mustSell && holdingLong) {
+        orderSize += size;
+        state.bounceCount = bounceCount + 1;
+    }
+    if (mustSell && !holdingLong) state.bounceCount = 0;
     if (mustSell && long.crossedThreshold) reduceOnly = true;
     if (overbought) {
         orderSize = size - settings.size;
         reduceOnly = false;
     }
-    if (mustSell) {
+    if (mustSell && state.bounceCount <= settings.maxBounceCount) {
         let symbol = settings.symbol;
         long.orderPrice = price;
         let precision = precisionMap.get(symbol)?.sizePrecision || 3;
@@ -233,7 +238,7 @@ async function tradingStrategy(context: Context) {
         long.orderPrice = price;
 
         //update order
-        let { retCode, retMsg } = await context.restClient.amendOrder({
+        let { retCode, retMsg } = await restClient.amendOrder({
             symbol: settings.symbol,
             category: 'linear',
             orderId: long.orderId,
@@ -260,20 +265,24 @@ async function tradingStrategy(context: Context) {
         return;
     }
 
-    if (mustbuy && holdingShort) orderSize += size;
+    if (mustbuy && holdingShort) {
+        orderSize += size;
+        state.bounceCount = bounceCount + 1;
+    }
+    if (mustbuy && !holdingShort) state.bounceCount = 0;
     if (mustbuy && short.crossedThreshold) reduceOnly = true;
     if (oversold) {
         orderSize = size - settings.size;
         reduceOnly = false;
     }
-    if (mustbuy) {
+    if (mustbuy && state.bounceCount <= settings.maxBounceCount) {
         let symbol = settings.symbol;
         long.orderPrice = price;
         let precision = precisionMap.get(symbol)?.sizePrecision || 3;
         let qty = `${round(orderSize, precision)}`;
 
         //create buy order
-        let { result: order } = await context.restClient.submitOrder({
+        let { result: order } = await restClient.submitOrder({
             category: 'linear',
             symbol,
             side: 'Buy',
@@ -308,6 +317,7 @@ try {
         bid: 0,
         ask: 0,
         size: 0,
+        bounceCount: 0,
         long: {
             breakEvenPrice: 0,
             crossedThreshold: false,
