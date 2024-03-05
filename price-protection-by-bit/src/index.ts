@@ -151,7 +151,7 @@ async function tradingStrategy(context: Context) {
     }
     if (short.threshold > 0 && price < short.threshold && !short.crossedThreshold && side === 'Sell') {
         short.crossedThreshold = true;
-        await Logger.log(`short crossedThreshold crossed price:${price} threshold:${long.threshold}`);
+        await Logger.log(`short crossedThreshold crossed price:${price} threshold:${short.threshold}`);
     }
 
     if (long.threshold > 0 && price > long.threshold && short.strikePrice !== long.breakEvenPrice) {
@@ -174,15 +174,17 @@ async function tradingStrategy(context: Context) {
     }
 
     if ((long.breakEvenPrice === 0 || long.threshold === 0) && holdingLong) {
+        long.strikePrice = entryPrice;
         long.breakEvenPrice = entryPrice + (entryPrice * 2 * commission);
         long.threshold = long.breakEvenPrice * (1 + settings.thresholdPercent);
-        await Logger.log(`calculating long breakEvenPrice:${long.breakEvenPrice} and threshold:${long.threshold}`);
+        await Logger.log(`calculating long breakEvenPrice:${long.breakEvenPrice} and threshold:${long.threshold} new strike:${entryPrice}`);
     }
 
     if ((short.breakEvenPrice === 0 || short.threshold === 0) && holdingShort) {
+        short.strikePrice = entryPrice;
         short.breakEvenPrice = entryPrice - (entryPrice * 2 * commission);
         short.threshold = short.breakEvenPrice * (1 - settings.thresholdPercent);
-        await Logger.log(`calculating short breakEvenPrice:${short.breakEvenPrice} and threshold:${short.threshold}`);
+        await Logger.log(`calculating short breakEvenPrice:${short.breakEvenPrice} and threshold:${short.threshold} new strike:${entryPrice}`);
     }
 
     let mustSell = bid < short.strikePrice && !shortFilled;
@@ -229,7 +231,11 @@ async function tradingStrategy(context: Context) {
         orderSize = size - settings.size;
         reduceOnly = false;
     }
-    if (mustSell && state.bounceCount <= settings.maxBounceCount) {
+    if (mustSell && state.bounceCount > settings.maxBounceCount) {
+        Logger.log(`sell required but cancelled as bounceCount:${state.bounceCount} > ${settings.maxBounceCount}`);
+        return;
+    }
+    if (mustSell) {
         let symbol = settings.symbol;
         short.orderPrice = price;
         let precision = precisionMap.get(symbol)?.sizePrecision || 3;
@@ -246,7 +252,7 @@ async function tradingStrategy(context: Context) {
             reduceOnly,
             qty
         });
-        await Logger.log(`short sell order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
+        await Logger.log(`short sell order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId} bounceCount:${state.bounceCount}`);
         short.orderId = order.orderId;
         return;
     }
@@ -297,7 +303,11 @@ async function tradingStrategy(context: Context) {
         orderSize = size - settings.size;
         reduceOnly = false;
     }
-    if (mustbuy && state.bounceCount <= settings.maxBounceCount) {
+    if (mustbuy && state.bounceCount > settings.maxBounceCount) {
+        Logger.log(`buy required but cancelled as bounceCount:${state.bounceCount} > ${settings.maxBounceCount}`);
+        return;
+    }
+    if (mustbuy) {
         let symbol = settings.symbol;
         long.orderPrice = price;
         let precision = precisionMap.get(symbol)?.sizePrecision || 3;
@@ -314,7 +324,7 @@ async function tradingStrategy(context: Context) {
             reduceOnly,
             qty
         });
-        await Logger.log(`long buy order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
+        await Logger.log(`long buy order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId} bounceCount:${state.bounceCount}`);
         long.orderId = order.orderId;
         return;
     }
