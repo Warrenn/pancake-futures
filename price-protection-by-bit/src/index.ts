@@ -72,6 +72,7 @@ function positionUpdate(data: any, state: State, settings: Settings) {
     if (data.data[0].symbol !== settings.symbol) return;
     state.size = Math.abs(parseFloat(data.data[0].size));
     state.entryPrice = parseFloat(data.data[0].entryPrice);
+    state.side = data.data[0].side;
 }
 
 function orderUpdate(data: any, state: State, settings: Settings) {
@@ -135,16 +136,35 @@ async function tradingStrategy(context: Context) {
     let longFilled = size === settings.size && side === 'Buy';
     let shortFilled = size === settings.size && side === 'Sell';
 
-    if (long.crossedThreshold && (noPosition || side === 'Sell')) long.crossedThreshold = false;
-    if (short.crossedThreshold && (noPosition || side === 'Buy')) short.crossedThreshold = false;
+    if (long.crossedThreshold && (noPosition || side === 'Sell')) {
+        long.crossedThreshold = false;
+        await Logger.log(`long crossedThreshold reset noPosition:${noPosition} side:${side}`);
+    }
+    if (short.crossedThreshold && (noPosition || side === 'Buy')) {
+        short.crossedThreshold = false;
+        await Logger.log(`short crossedThreshold reset noPosition:${noPosition} side:${side}`);
+    }
 
-    if (price > long.threshold && !long.crossedThreshold && side === 'Buy') long.crossedThreshold = true;
-    if (price < short.threshold && !short.crossedThreshold && side === 'Sell') short.crossedThreshold = true;
+    if (long.threshold > 0 && price > long.threshold && !long.crossedThreshold && side === 'Buy') {
+        long.crossedThreshold = true;
+        await Logger.log(`long crossedThreshold crossed price:${price} threshold:${long.threshold}`);
+    }
+    if (short.threshold > 0 && price < short.threshold && !short.crossedThreshold && side === 'Sell') {
+        short.crossedThreshold = true;
+        await Logger.log(`short crossedThreshold crossed price:${price} threshold:${long.threshold}`);
+    }
 
-    if (price > long.threshold && short.strikePrice !== long.breakEvenPrice) short.strikePrice = long.breakEvenPrice;
-    if (price < short.threshold && long.strikePrice !== short.breakEvenPrice) long.strikePrice = short.breakEvenPrice;
+    if (long.threshold > 0 && price > long.threshold && short.strikePrice !== long.breakEvenPrice) {
+        await Logger.log(`short strike price reset as long price:${price} crossed threshold:${long.threshold} set to breakeven price:${long.breakEvenPrice}`);
+        short.strikePrice = long.breakEvenPrice;
+    }
+    if (short.threshold > 0 && price < short.threshold && long.strikePrice !== short.breakEvenPrice) {
+        await Logger.log(`long strike price reset as short price:${price} crossed threshold:${short.threshold} set to breakeven price:${short.breakEvenPrice}`);
+        long.strikePrice = short.breakEvenPrice;
+    }
 
     if (price < settings.longStrikePrice && price > settings.shortStrikePrice && noPosition) {
+        await Logger.log(`resetting long and short strikePrice, breakEvenPrice and threshold as ${price} > ${settings.shortStrikePrice} and < ${settings.shortStrikePrice} and theres no position`);
         short.strikePrice = settings.shortStrikePrice;
         long.strikePrice = settings.longStrikePrice;
         long.breakEvenPrice = 0;
@@ -156,11 +176,13 @@ async function tradingStrategy(context: Context) {
     if ((long.breakEvenPrice === 0 || long.threshold === 0) && holdingLong) {
         long.breakEvenPrice = entryPrice + (entryPrice * 2 * commission);
         long.threshold = long.breakEvenPrice * (1 + settings.thresholdPercent);
+        await Logger.log(`calculating long breakEvenPrice:${long.breakEvenPrice} and threshold:${long.threshold}`);
     }
 
     if ((short.breakEvenPrice === 0 || short.threshold === 0) && holdingShort) {
         short.breakEvenPrice = entryPrice - (entryPrice * 2 * commission);
         short.threshold = short.breakEvenPrice * (1 - settings.thresholdPercent);
+        await Logger.log(`calculating short breakEvenPrice:${short.breakEvenPrice} and threshold:${short.threshold}`);
     }
 
     let mustSell = bid < short.strikePrice && !shortFilled;
@@ -209,7 +231,7 @@ async function tradingStrategy(context: Context) {
     }
     if (mustSell && state.bounceCount <= settings.maxBounceCount) {
         let symbol = settings.symbol;
-        long.orderPrice = price;
+        short.orderPrice = price;
         let precision = precisionMap.get(symbol)?.sizePrecision || 3;
         let qty = `${round(orderSize, precision)}`;
 
@@ -224,8 +246,8 @@ async function tradingStrategy(context: Context) {
             reduceOnly,
             qty
         });
-        await Logger.log(`long sell order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
-        long.orderId = order.orderId;
+        await Logger.log(`short sell order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
+        short.orderId = order.orderId;
         return;
     }
 
@@ -323,7 +345,7 @@ try {
             crossedThreshold: false,
             orderId: '',
             orderPrice: 0,
-            strikePrice: 0,
+            strikePrice: settings.longStrikePrice,
             threshold: 0
         },
         short: {
@@ -331,7 +353,7 @@ try {
             crossedThreshold: false,
             orderId: '',
             orderPrice: 0,
-            strikePrice: 0,
+            strikePrice: settings.shortStrikePrice,
             threshold: 0
         }
     } as State;
