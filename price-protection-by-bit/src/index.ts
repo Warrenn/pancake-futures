@@ -18,6 +18,8 @@ type State = {
     entryPrice: number
     side: 'Buy' | 'Sell' | 'None'
     bounceCount: number
+    buyPrice: number
+    sellPrice: number
     long: DirectionState
     short: DirectionState
 }
@@ -27,8 +29,8 @@ type DirectionState = {
     breakEvenPrice: number
     orderPrice: number
     threshold: number
-    crossedThreshold: boolean
-    strikePrice: number
+    preEntrySize: number
+    entryPrice: number
 }
 
 type SymbolPrecision = {
@@ -126,9 +128,9 @@ async function getSettings({ ssm, name, keyPrefix }: { ssm: SSMClient, name: str
 
 async function tradingStrategy(context: Context) {
     let { state, settings, restClient } = context;
-    let { bid, ask, price, side, size, long, short, entryPrice, bounceCount } = state;
-    let overbought = size > settings.size && side === 'Buy' && price > settings.longStrikePrice;
-    let oversold = size > settings.size && side === 'Sell' && price < settings.shortStrikePrice;
+    let { bid, ask, price, side, size, long, short, entryPrice, bounceCount, sellPrice, buyPrice } = state;
+    // let overbought = size > settings.size && side === 'Buy' && price > settings.longStrikePrice;
+    // let oversold = size > settings.size && side === 'Sell' && price < settings.shortStrikePrice;
     let holdingLong = side === 'Buy' && size > 0;
     let holdingShort = side === 'Sell' && size > 0;
     let noPosition = size === 0;
@@ -136,59 +138,54 @@ async function tradingStrategy(context: Context) {
     let longFilled = size === settings.size && side === 'Buy';
     let shortFilled = size === settings.size && side === 'Sell';
 
-    if (long.crossedThreshold && (noPosition || side === 'Sell')) {
-        long.crossedThreshold = false;
-        await Logger.log(`long crossedThreshold reset noPosition:${noPosition} side:${side}`);
+    if (long.threshold > 0 && holdingLong && price > long.threshold && sellPrice !== long.breakEvenPrice) {
+        await Logger.log(`sell price set to ${long.breakEvenPrice} as price:${price} crossed threshold:${long.threshold} for long position`);
+        state.sellPrice = long.breakEvenPrice;
     }
-    if (short.crossedThreshold && (noPosition || side === 'Buy')) {
-        short.crossedThreshold = false;
-        await Logger.log(`short crossedThreshold reset noPosition:${noPosition} side:${side}`);
-    }
-
-    if (long.threshold > 0 && price > long.threshold && !long.crossedThreshold && side === 'Buy') {
-        long.crossedThreshold = true;
-        await Logger.log(`long crossedThreshold crossed price:${price} threshold:${long.threshold}`);
-    }
-    if (short.threshold > 0 && price < short.threshold && !short.crossedThreshold && side === 'Sell') {
-        short.crossedThreshold = true;
-        await Logger.log(`short crossedThreshold crossed price:${price} threshold:${short.threshold}`);
-    }
-
-    if (long.threshold > 0 && price > long.threshold && short.strikePrice !== long.breakEvenPrice) {
-        await Logger.log(`short strike price reset as long price:${price} crossed threshold:${long.threshold} set to breakeven price:${long.breakEvenPrice}`);
-        short.strikePrice = long.breakEvenPrice;
-    }
-    if (short.threshold > 0 && price < short.threshold && long.strikePrice !== short.breakEvenPrice) {
-        await Logger.log(`long strike price reset as short price:${price} crossed threshold:${short.threshold} set to breakeven price:${short.breakEvenPrice}`);
-        long.strikePrice = short.breakEvenPrice;
+    if (short.threshold > 0 && holdingShort && price < short.threshold && buyPrice !== short.breakEvenPrice) {
+        await Logger.log(`buy price set to ${short.breakEvenPrice} as price:${price} crossed threshold:${long.threshold} for short position`);
+        state.buyPrice = short.breakEvenPrice;
     }
 
     if (price < settings.longStrikePrice && price > settings.shortStrikePrice && noPosition) {
-        await Logger.log(`resetting long and short strikePrice, breakEvenPrice and threshold as ${price} > ${settings.shortStrikePrice} and < ${settings.shortStrikePrice} and theres no position`);
-        short.strikePrice = settings.shortStrikePrice;
-        long.strikePrice = settings.longStrikePrice;
+        await Logger.log(`resetting sell and buy price, breakEvenPrice and threshold as ${price} > ${settings.shortStrikePrice} and < ${settings.shortStrikePrice} and theres no position`);
+        state.sellPrice = settings.shortStrikePrice;
+        state.buyPrice = settings.longStrikePrice;
+
+        long.orderId = ''
+        short.orderId = ''
+
+        long.orderPrice = 0;
+        short.orderPrice = 0;
+
+        long.preEntrySize = 0
+        short.preEntrySize = 0
+
         long.breakEvenPrice = 0;
-        long.threshold = 0;
         short.breakEvenPrice = 0;
+
         short.threshold = 0;
+        long.threshold = 0;
+
+        long.entryPrice = 0;
+        short.entryPrice = 0;
     }
 
-    if ((long.breakEvenPrice === 0 || long.threshold === 0) && holdingLong) {
-        long.strikePrice = entryPrice;
+    if (long.entryPrice !== entryPrice && holdingLong) {
+        long.entryPrice = entryPrice;
         long.breakEvenPrice = entryPrice + (entryPrice * 2 * commission);
         long.threshold = long.breakEvenPrice * (1 + settings.thresholdPercent);
         await Logger.log(`calculating long breakEvenPrice:${long.breakEvenPrice} and threshold:${long.threshold} new strike:${entryPrice}`);
     }
 
-    if ((short.breakEvenPrice === 0 || short.threshold === 0) && holdingShort) {
-        short.strikePrice = entryPrice;
+    if (short.entryPrice !== entryPrice && holdingShort) {
+        short.entryPrice = entryPrice;
         short.breakEvenPrice = entryPrice - (entryPrice * 2 * commission);
         short.threshold = short.breakEvenPrice * (1 - settings.thresholdPercent);
         await Logger.log(`calculating short breakEvenPrice:${short.breakEvenPrice} and threshold:${short.threshold} new strike:${entryPrice}`);
     }
 
-    let mustSell = bid < short.strikePrice && !shortFilled;
-    if (overbought) mustSell = true;
+    let mustSell = bid < state.sellPrice && !shortFilled;
 
     if (mustSell && short.orderId && short.orderPrice !== price) {
         short.orderPrice = price;
@@ -221,21 +218,21 @@ async function tradingStrategy(context: Context) {
 
     let orderSize = settings.size;
     let reduceOnly = false;
-    if (mustSell && holdingLong) {
+    if (mustSell && long.preEntrySize > 0) {
         orderSize += size;
         state.bounceCount = bounceCount + 1;
     }
-    if (mustSell && !holdingLong) state.bounceCount = 0;
-    if (mustSell && long.crossedThreshold) reduceOnly = true;
-    if (overbought) {
-        orderSize = size - settings.size;
-        reduceOnly = false;
+    if (mustSell && holdingLong) short.preEntrySize = size;
+    if (mustSell && long.preEntrySize === 0) {
+        state.bounceCount = 0;
+        reduceOnly = true;
     }
+
     if (mustSell && state.bounceCount > settings.maxBounceCount) {
         Logger.log(`sell required but cancelled as bounceCount:${state.bounceCount} > ${settings.maxBounceCount}`);
         return;
     }
-    if (mustSell) {
+    if (mustSell && !short.orderId) {
         let symbol = settings.symbol;
         short.orderPrice = price;
         let precision = precisionMap.get(symbol)?.sizePrecision || 3;
@@ -253,15 +250,11 @@ async function tradingStrategy(context: Context) {
             qty
         });
         await Logger.log(`short sell order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId} bounceCount:${state.bounceCount}`);
-        short.orderId = order.orderId;
+        if (order.orderId) short.orderId = order.orderId;
         return;
     }
 
-    let mustbuy = ask > long.strikePrice && !longFilled;
-    if (oversold) mustbuy = true;
-
-    orderSize = settings.size;
-    reduceOnly = false
+    let mustbuy = ask > state.buyPrice && !longFilled;
     if (mustbuy && long.orderId && long.orderPrice !== price) {
         long.orderPrice = price;
 
@@ -293,21 +286,22 @@ async function tradingStrategy(context: Context) {
         return;
     }
 
-    if (mustbuy && holdingShort) {
+    orderSize = settings.size;
+    reduceOnly = false
+    if (mustbuy && short.preEntrySize > 0) {
         orderSize += size;
         state.bounceCount = bounceCount + 1;
     }
-    if (mustbuy && !holdingShort) state.bounceCount = 0;
-    if (mustbuy && short.crossedThreshold) reduceOnly = true;
-    if (oversold) {
-        orderSize = size - settings.size;
-        reduceOnly = false;
+    if (mustbuy && holdingShort) long.preEntrySize = size;
+    if (mustbuy && short.preEntrySize === 0) {
+        state.bounceCount = 0;
+        reduceOnly = true;
     }
     if (mustbuy && state.bounceCount > settings.maxBounceCount) {
         Logger.log(`buy required but cancelled as bounceCount:${state.bounceCount} > ${settings.maxBounceCount}`);
         return;
     }
-    if (mustbuy) {
+    if (mustbuy && !long.orderId) {
         let symbol = settings.symbol;
         long.orderPrice = price;
         let precision = precisionMap.get(symbol)?.sizePrecision || 3;
@@ -325,7 +319,7 @@ async function tradingStrategy(context: Context) {
             qty
         });
         await Logger.log(`long buy order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId} bounceCount:${state.bounceCount}`);
-        long.orderId = order.orderId;
+        if (order.orderId) long.orderId = order.orderId;
         return;
     }
 }
@@ -348,22 +342,27 @@ try {
     let state: State = {
         bid: 0,
         ask: 0,
+        buyPrice: 0,
+        entryPrice: 0,
+        price: 0,
+        sellPrice: 0,
+        side: 'None',
         size: 0,
         bounceCount: 0,
         long: {
             breakEvenPrice: 0,
-            crossedThreshold: false,
             orderId: '',
             orderPrice: 0,
-            strikePrice: settings.longStrikePrice,
+            preEntrySize: 0,
+            entryPrice: 0,
             threshold: 0
         },
         short: {
             breakEvenPrice: 0,
-            crossedThreshold: false,
             orderId: '',
             orderPrice: 0,
-            strikePrice: settings.shortStrikePrice,
+            preEntrySize: 0,
+            entryPrice: 0,
             threshold: 0
         }
     } as State;
