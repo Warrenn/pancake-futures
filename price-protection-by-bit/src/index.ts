@@ -228,7 +228,7 @@ async function tradingStrategy(context: Context) {
     }
 
     if (mustSell && state.bounceCount > settings.maxBounceCount) {
-        Logger.log(`sell required but cancelled as bounceCount:${state.bounceCount} > ${settings.maxBounceCount}`);
+        Logger.log(`sell required but cancelled as bounceCount exceeded ${settings.maxBounceCount}`);
         return;
     }
     if (mustSell && !short.orderId) {
@@ -297,7 +297,7 @@ async function tradingStrategy(context: Context) {
         reduceOnly = true;
     }
     if (mustbuy && state.bounceCount > settings.maxBounceCount) {
-        Logger.log(`buy required but cancelled as bounceCount:${state.bounceCount} > ${settings.maxBounceCount}`);
+        Logger.log(`buy required but cancelled as bounceCount exceeded ${settings.maxBounceCount}`);
         return;
     }
     if (mustbuy && !long.orderId) {
@@ -384,8 +384,8 @@ try {
         category: 'linear'
     });
 
-    orders = orders?.filter(o => !o.triggerPrice)
-    for (let i = 0; i < orders.length || 0; i++) {
+    orders = orders?.filter(o => !o.triggerPrice && o.symbol === settings.symbol);
+    for (let i = 0; i < orders?.length || 0; i++) {
         let order = orders[i];
         if (order.side === 'Buy') {
             state.long.orderId = order.orderId;
