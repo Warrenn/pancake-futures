@@ -47,7 +47,6 @@ type Settings = {
     longStrikePrice: number
     shortStrikePrice: number
     thresholdPercent: number
-    trailPercent: number
     slPercent: number
     coolDown: number
     symbol: string
@@ -150,19 +149,7 @@ async function tradingStrategy(context: Context) {
         state.buyPrice = short.breakEvenPrice;
     }
 
-    let trailSellPrice = price * (1 - settings.trailPercent);
-    let trailBuyPrice = price * (1 + settings.trailPercent);
-
-    if (state.sellPrice < settings.shortStrikePrice && price > state.sellPrice && state.sellPrice < trailSellPrice && !holdingShort) {
-        state.sellPrice = trailSellPrice;
-        console.log(`sellPrice : ${trailSellPrice}`);
-    }
-    if (state.buyPrice > settings.longStrikePrice && price < state.buyPrice && state.buyPrice > trailBuyPrice && !holdingLong) {
-        state.buyPrice = trailBuyPrice;
-        console.log(`buyPrice: ${trailBuyPrice}`);
-    }
-
-    if (price < settings.longStrikePrice && price > settings.shortStrikePrice && noPosition) {
+    if (price < settings.longStrikePrice && price > settings.shortStrikePrice && noPosition && (state.sellPrice !== settings.shortStrikePrice || state.buyPrice !== settings.longStrikePrice)) {
         await Logger.log(`resetting sell and buy price, breakEvenPrice and threshold as ${price} > ${settings.shortStrikePrice} and < ${settings.shortStrikePrice} and theres no position`);
         state.sellPrice = settings.shortStrikePrice;
         state.buyPrice = settings.longStrikePrice;
@@ -447,11 +434,6 @@ try {
         settings,
         restClient
     }
-
-    let holdingLong = state.side === 'Buy' && state.size > 0;
-    let holdingShort = state.side === 'Sell' && state.size > 0;
-    if (state.price < state.sellPrice && !holdingShort && state.price < settings.shortStrikePrice) state.sellPrice = state.price * (1 - settings.trailPercent);
-    if (state.price > state.buyPrice && !holdingLong && state.price > settings.longStrikePrice) state.buyPrice = state.price * (1 + settings.trailPercent);
 
     while (true) {
         await tradingStrategy(context);
