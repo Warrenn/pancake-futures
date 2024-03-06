@@ -1,9 +1,10 @@
 import { setTimeout as asyncSleep } from 'timers/promises';
-import { RestClientV5, WebsocketClient } from 'bybit-api'
+import { OrderTriggerByV5, RestClientV5, WebsocketClient } from 'bybit-api'
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import dotenv from 'dotenv';
 import { round } from './calculations.js';
 import { Logger } from './logger.js';
+import { stat } from 'fs';
 
 const commission = 0.0002;
 const precisionMap = new Map<string, SymbolPrecision>()
@@ -17,11 +18,11 @@ type State = {
     size: number
     entryPrice: number
     side: 'Buy' | 'Sell' | 'None'
-    bounceCount: number
     buyPrice: number
     sellPrice: number
     long: DirectionState
     short: DirectionState
+    coolDownTimeout: number | undefined
 }
 
 type DirectionState = {
@@ -29,7 +30,6 @@ type DirectionState = {
     breakEvenPrice: number
     orderPrice: number
     threshold: number
-    preEntrySize: number
     entryPrice: number
 }
 
@@ -47,7 +47,9 @@ type Settings = {
     longStrikePrice: number
     shortStrikePrice: number
     thresholdPercent: number
-    maxBounceCount: number
+    trailPercent: number
+    slPercent: number
+    coolDown: number
     symbol: string
     size: number
 }
@@ -128,22 +130,36 @@ async function getSettings({ ssm, name, keyPrefix }: { ssm: SSMClient, name: str
 
 async function tradingStrategy(context: Context) {
     let { state, settings, restClient } = context;
-    let { bid, ask, price, side, size, long, short, entryPrice, bounceCount, sellPrice, buyPrice } = state;
+    let { bid, ask, price, side, size, long, short, entryPrice, coolDownTimeout } = state;
 
     let holdingLong = side === 'Buy' && size > 0;
     let holdingShort = side === 'Sell' && size > 0;
     let noPosition = size === 0;
 
-    let longFilled = size === settings.size && side === 'Buy';
-    let shortFilled = size === settings.size && side === 'Sell';
+    let longFilled = size >= settings.size && side === 'Buy';
+    let shortFilled = size >= settings.size && side === 'Sell';
 
-    if (long.threshold > 0 && holdingLong && price > long.threshold && sellPrice !== long.breakEvenPrice) {
+    let coolDownReady = coolDownTimeout != undefined && (new Date()).getTime() >= coolDownTimeout;
+
+    if (long.threshold > 0 && holdingLong && price > long.threshold && state.sellPrice !== long.breakEvenPrice) {
         await Logger.log(`sell price set to ${long.breakEvenPrice} as price:${price} crossed threshold:${long.threshold} for long position`);
         state.sellPrice = long.breakEvenPrice;
     }
-    if (short.threshold > 0 && holdingShort && price < short.threshold && buyPrice !== short.breakEvenPrice) {
+    if (short.threshold > 0 && holdingShort && price < short.threshold && state.buyPrice !== short.breakEvenPrice) {
         await Logger.log(`buy price set to ${short.breakEvenPrice} as price:${price} crossed threshold:${long.threshold} for short position`);
         state.buyPrice = short.breakEvenPrice;
+    }
+
+    let trailSellPrice = price * (1 - settings.trailPercent);
+    let trailBuyPrice = price * (1 + settings.trailPercent);
+
+    if (state.sellPrice < settings.shortStrikePrice && price > state.sellPrice && state.sellPrice < trailSellPrice && !holdingShort) {
+        state.sellPrice = trailSellPrice;
+        console.log(`sellPrice : ${trailSellPrice}`);
+    }
+    if (state.buyPrice > settings.longStrikePrice && price < state.buyPrice && state.buyPrice > trailBuyPrice && !holdingLong) {
+        state.buyPrice = trailBuyPrice;
+        console.log(`buyPrice: ${trailBuyPrice}`);
     }
 
     if (price < settings.longStrikePrice && price > settings.shortStrikePrice && noPosition) {
@@ -156,9 +172,6 @@ async function tradingStrategy(context: Context) {
 
         long.orderPrice = 0;
         short.orderPrice = 0;
-
-        long.preEntrySize = 0
-        short.preEntrySize = 0
 
         long.breakEvenPrice = 0;
         short.breakEvenPrice = 0;
@@ -186,7 +199,7 @@ async function tradingStrategy(context: Context) {
 
     let mustSell = bid < state.sellPrice && !shortFilled;
 
-    if (mustSell && short.orderId && short.orderPrice !== price) {
+    if (mustSell && short.orderId && short.orderPrice !== price && coolDownReady) {
         short.orderPrice = price;
         //update order
         let { retCode, retMsg } = await restClient.amendOrder({
@@ -195,12 +208,12 @@ async function tradingStrategy(context: Context) {
             orderId: short.orderId,
             price: `${price}`
         });
-        if (retCode === 110001 && retMsg === 'order not exists or too late to replace') {
-            short.orderId = '';
-            await Logger.log(`failed to update short orderId:${short.orderId}`);
+        if (retCode === 0 && retMsg === 'OK') {
+            await Logger.log(`ammend short order price:${price} symbol:${settings.symbol} orderId:${short.orderId}`);
         }
         else {
-            await Logger.log(`ammend short order price:${price} symbol:${settings.symbol} orderId:${short.orderId}`);
+            short.orderId = '';
+            await Logger.log(`failed to update short orderId:${short.orderId} retCode:${retCode} retMsg:${retMsg}`);
         }
         return;
     }
@@ -217,28 +230,26 @@ async function tradingStrategy(context: Context) {
 
     let orderSize = settings.size;
     let reduceOnly = false;
-    if (mustSell && long.preEntrySize > 0) {
-        orderSize += size;
-        state.bounceCount = bounceCount + 1;
-    }
-    if (mustSell && holdingLong) short.preEntrySize = size;
-    if (mustSell && long.preEntrySize === 0) {
-        state.bounceCount = 0;
+    let slTriggerBy: OrderTriggerByV5 | undefined = undefined;
+    let stopLoss: string | undefined = undefined;
+
+    if (mustSell && holdingLong) {
+        orderSize = size;
         reduceOnly = true;
     }
-
-    if (mustSell && state.bounceCount > settings.maxBounceCount) {
-        Logger.log(`sell required but cancelled as bounceCount exceeded ${settings.maxBounceCount}`);
-        return;
+    if (mustSell && !holdingLong) {
+        slTriggerBy = 'MarkPrice';
+        stopLoss = `${price * (1 + settings.slPercent)}`;
     }
-    if (mustSell && !short.orderId) {
+
+    if (mustSell && !short.orderId && coolDownReady) {
         let symbol = settings.symbol;
         short.orderPrice = price;
         let precision = precisionMap.get(symbol)?.sizePrecision || 3;
         let qty = `${round(orderSize, precision)}`;
 
         //create sell order
-        let { result: order } = await restClient.submitOrder({
+        let { retCode, retMsg, result: order } = await restClient.submitOrder({
             category: 'linear',
             symbol,
             side: 'Sell',
@@ -246,15 +257,22 @@ async function tradingStrategy(context: Context) {
             timeInForce: 'PostOnly',
             price: `${price}`,
             reduceOnly,
+            slTriggerBy,
+            stopLoss,
             qty
         });
-        await Logger.log(`short sell order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId} bounceCount:${state.bounceCount}`);
-        if (order.orderId) short.orderId = order.orderId;
+        if (retCode === 0 && retMsg === 'OK') {
+            await Logger.log(`short sell order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
+            if (order.orderId) short.orderId = order.orderId;
+        }
+        else {
+            await Logger.log(`short sell order failed price:${price} qty:${qty} symbol:${symbol} retCode:${retCode} reduceOnly:${reduceOnly} retMsg:${retMsg}`);
+        }
         return;
     }
 
     let mustbuy = ask > state.buyPrice && !longFilled;
-    if (mustbuy && long.orderId && long.orderPrice !== price) {
+    if (mustbuy && long.orderId && long.orderPrice !== price && coolDownReady) {
         long.orderPrice = price;
 
         //update order
@@ -264,12 +282,12 @@ async function tradingStrategy(context: Context) {
             orderId: long.orderId,
             price: `${price}`
         });
-        if (retCode === 110001 && retMsg === 'order not exists or too late to replace') {
-            long.orderId = '';
-            await Logger.log(`failed to update long orderId:${long.orderId}`);
+        if (retCode === 0 && retMsg === 'OK') {
+            await Logger.log(`ammend long order price:${price} symbol:${settings.symbol} orderId:${long.orderId}`);
         }
         else {
-            await Logger.log(`ammend long order price:${price} symbol:${settings.symbol} orderId:${long.orderId}`);
+            long.orderId = '';
+            await Logger.log(`failed to update long orderId:${long.orderId} retCode:${retCode} retMsg:${retMsg}`);
         }
         return;
     }
@@ -287,27 +305,25 @@ async function tradingStrategy(context: Context) {
 
     orderSize = settings.size;
     reduceOnly = false
-    if (mustbuy && short.preEntrySize > 0) {
-        orderSize += size;
-        state.bounceCount = bounceCount + 1;
-    }
-    if (mustbuy && holdingShort) long.preEntrySize = size;
-    if (mustbuy && short.preEntrySize === 0) {
-        state.bounceCount = 0;
+    slTriggerBy = undefined;
+    stopLoss = undefined;
+
+    if (mustbuy && holdingShort) {
+        orderSize = size;
         reduceOnly = true;
+    } else {
+        slTriggerBy = 'MarkPrice';
+        stopLoss = `${price * (1 - settings.slPercent)}`;
     }
-    if (mustbuy && state.bounceCount > settings.maxBounceCount) {
-        Logger.log(`buy required but cancelled as bounceCount exceeded ${settings.maxBounceCount}`);
-        return;
-    }
-    if (mustbuy && !long.orderId) {
+
+    if (mustbuy && !long.orderId && coolDownReady) {
         let symbol = settings.symbol;
         long.orderPrice = price;
         let precision = precisionMap.get(symbol)?.sizePrecision || 3;
         let qty = `${round(orderSize, precision)}`;
 
         //create buy order
-        let { result: order } = await restClient.submitOrder({
+        let { retCode, retMsg, result: order } = await restClient.submitOrder({
             category: 'linear',
             symbol,
             side: 'Buy',
@@ -315,12 +331,22 @@ async function tradingStrategy(context: Context) {
             timeInForce: 'PostOnly',
             price: `${price}`,
             reduceOnly,
+            slTriggerBy,
+            stopLoss,
             qty
         });
-        await Logger.log(`long buy order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId} bounceCount:${state.bounceCount}`);
-        if (order.orderId) long.orderId = order.orderId;
+        if (retCode === 0 && retMsg === 'OK') {
+            await Logger.log(`long buy order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
+            if (order.orderId) long.orderId = order.orderId;
+        }
+        else {
+            await Logger.log(`long buy order failed price:${price} qty:${qty} symbol:${symbol} reduceOnly:${reduceOnly} retCode:${retCode} retMsg:${retMsg}`);
+        }
         return;
     }
+
+    if (coolDownTimeout === undefined && (mustSell || mustbuy)) state.coolDownTimeout = (new Date()).getTime() + settings.coolDown;
+    if (!mustSell && !mustbuy && coolDownTimeout !== undefined) state.coolDownTimeout = undefined;
 }
 
 dotenv.config({ override: true });
@@ -341,18 +367,18 @@ try {
     let state: State = {
         bid: 0,
         ask: 0,
-        buyPrice: 0,
+        buyPrice: settings.longStrikePrice,
         entryPrice: 0,
         price: 0,
-        sellPrice: 0,
+        sellPrice: settings.shortStrikePrice,
         side: 'None',
         size: 0,
         bounceCount: 0,
+        coolDownTimeout: undefined,
         long: {
             breakEvenPrice: 0,
             orderId: '',
             orderPrice: 0,
-            preEntrySize: 0,
             entryPrice: 0,
             threshold: 0
         },
@@ -360,7 +386,6 @@ try {
             breakEvenPrice: 0,
             orderId: '',
             orderPrice: 0,
-            preEntrySize: 0,
             entryPrice: 0,
             threshold: 0
         }
@@ -422,6 +447,11 @@ try {
         settings,
         restClient
     }
+
+    let holdingLong = state.side === 'Buy' && state.size > 0;
+    let holdingShort = state.side === 'Sell' && state.size > 0;
+    if (state.price < state.sellPrice && !holdingShort && state.price < settings.shortStrikePrice) state.sellPrice = state.price * (1 - settings.trailPercent);
+    if (state.price > state.buyPrice && !holdingLong && state.price > settings.longStrikePrice) state.buyPrice = state.price * (1 + settings.trailPercent);
 
     while (true) {
         await tradingStrategy(context);
