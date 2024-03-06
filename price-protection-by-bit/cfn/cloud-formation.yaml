@@ -245,7 +245,7 @@ Resources:
               -e AWS_REGION="${Region}" \
               -e USE_TESTNET="${UseTestNet}" \
               -e KEY_PREFIX="/${EnvName}/${AppPrefix}/" \
-              -e LOG_FILE="/logs.log" \
+              -e LOG_FILE="/logs/logs.log" \
               "${!repositoryUri}/${RepositoryName}:latest" \
               npm run start
 

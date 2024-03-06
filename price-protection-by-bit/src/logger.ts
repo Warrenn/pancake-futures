@@ -31,7 +31,7 @@ export class Logger {
             let timestamp = (new Date()).getTime();
             let filetime = timestamp - (timestamp % 86400000);
             let logfilename = process.env.LOG_FILE.replace(/\.log$/g, `.${filetime.toString()}.log`);
-            await fs.appendFile(logfilename, `${process.env.LOG_FILE}:${message}\r\n`, { 'encoding': 'utf-8' });
+            await fs.appendFile(logfilename, `${message}\r\n`, { 'encoding': 'utf-8' });
         }
     }
 }
