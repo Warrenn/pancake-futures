@@ -138,54 +138,58 @@ async function tradingStrategy(context: Context) {
     let longFilled = size >= settings.size && side === 'Buy';
     let shortFilled = size >= settings.size && side === 'Sell';
 
-    let coolDownReady = coolDownTimeout != undefined && (new Date()).getTime() >= coolDownTimeout;
+    let haveLongStrikePrice = settings.longStrikePrice > 0;
+    let haveShortStrikePrice = settings.shortStrikePrice > 0;
 
-    if (long.threshold > 0 && holdingLong && price > long.threshold && state.sellPrice !== long.breakEvenPrice) {
+    let haveCoolDownSetting = settings.coolDown > 0;
+    let coolDownReady = haveCoolDownSetting || (coolDownTimeout != undefined && (new Date()).getTime() >= coolDownTimeout);
+
+    if (haveLongStrikePrice && long.threshold > 0 && holdingLong && price > long.threshold && state.sellPrice !== long.breakEvenPrice) {
         await Logger.log(`sell price set to ${long.breakEvenPrice} as price:${price} crossed threshold:${long.threshold} for long position`);
         state.sellPrice = long.breakEvenPrice;
     }
-    if (short.threshold > 0 && holdingShort && price < short.threshold && state.buyPrice !== short.breakEvenPrice) {
-        await Logger.log(`buy price set to ${short.breakEvenPrice} as price:${price} crossed threshold:${long.threshold} for short position`);
+    if (haveShortStrikePrice && short.threshold > 0 && holdingShort && price < short.threshold && state.buyPrice !== short.breakEvenPrice) {
+        await Logger.log(`buy price set to ${short.breakEvenPrice} as price:${price} crossed threshold:${short.threshold} for short position`);
         state.buyPrice = short.breakEvenPrice;
     }
 
-    if (price < settings.longStrikePrice && price > settings.shortStrikePrice && noPosition && (state.sellPrice !== settings.shortStrikePrice || state.buyPrice !== settings.longStrikePrice)) {
-        await Logger.log(`resetting sell and buy price, breakEvenPrice and threshold as ${price} > ${settings.shortStrikePrice} and < ${settings.shortStrikePrice} and theres no position`);
-        state.sellPrice = settings.shortStrikePrice;
+    if (haveLongStrikePrice && price < settings.longStrikePrice && noPosition && state.buyPrice !== settings.longStrikePrice) {
+        await Logger.log(`resetting long buy price, breakEvenPrice and threshold as price:${price} < strikePrice:${settings.longStrikePrice} and theres no position`);
+
         state.buyPrice = settings.longStrikePrice;
-
         long.orderId = ''
-        short.orderId = ''
-
         long.orderPrice = 0;
-        short.orderPrice = 0;
-
         long.breakEvenPrice = 0;
-        short.breakEvenPrice = 0;
-
-        short.threshold = 0;
         long.threshold = 0;
-
         long.entryPrice = 0;
+    }
+
+    if (haveShortStrikePrice && price > settings.shortStrikePrice && noPosition && state.sellPrice !== settings.shortStrikePrice) {
+        await Logger.log(`resetting short sell price, breakEvenPrice and threshold as price:${price} > strikePrice:${settings.shortStrikePrice} and theres no position`);
+
+        state.sellPrice = settings.shortStrikePrice;
+        short.orderId = ''
+        short.orderPrice = 0;
+        short.breakEvenPrice = 0;
+        short.threshold = 0;
         short.entryPrice = 0;
     }
 
-    if (long.entryPrice !== entryPrice && holdingLong) {
+    if (haveLongStrikePrice && long.entryPrice !== entryPrice && holdingLong) {
         long.entryPrice = entryPrice;
         long.breakEvenPrice = entryPrice + (entryPrice * 2 * commission);
         long.threshold = long.breakEvenPrice * (1 + settings.thresholdPercent);
         await Logger.log(`calculating long breakEvenPrice:${long.breakEvenPrice} and threshold:${long.threshold} entryPrice:${entryPrice}`);
     }
 
-    if (short.entryPrice !== entryPrice && holdingShort) {
+    if (haveLongStrikePrice && short.entryPrice !== entryPrice && holdingShort) {
         short.entryPrice = entryPrice;
         short.breakEvenPrice = entryPrice - (entryPrice * 2 * commission);
         short.threshold = short.breakEvenPrice * (1 - settings.thresholdPercent);
         await Logger.log(`calculating short breakEvenPrice:${short.breakEvenPrice} and threshold:${short.threshold} entryPrice:${entryPrice}`);
     }
 
-    let mustSell = bid < state.sellPrice && !shortFilled;
-
+    let mustSell = state.sellPrice > 0 && bid < state.sellPrice && !shortFilled;
     if (mustSell && short.orderId && short.orderPrice !== price && coolDownReady) {
         short.orderPrice = price;
         //update order
@@ -224,7 +228,7 @@ async function tradingStrategy(context: Context) {
         orderSize = size;
         reduceOnly = true;
     }
-    if (mustSell && !holdingLong) {
+    if (mustSell && !holdingLong && settings.slPercent > 0) {
         slTriggerBy = 'MarkPrice';
         stopLoss = `${price * (1 + settings.slPercent)}`;
     }
@@ -258,7 +262,7 @@ async function tradingStrategy(context: Context) {
         return;
     }
 
-    let mustbuy = ask > state.buyPrice && !longFilled;
+    let mustbuy = state.buyPrice > 0 && ask > state.buyPrice && !longFilled;
     if (mustbuy && long.orderId && long.orderPrice !== price && coolDownReady) {
         long.orderPrice = price;
 
@@ -298,7 +302,8 @@ async function tradingStrategy(context: Context) {
     if (mustbuy && holdingShort) {
         orderSize = size;
         reduceOnly = true;
-    } else {
+    }
+    if (mustbuy && !holdingLong && settings.slPercent > 0) {
         slTriggerBy = 'MarkPrice';
         stopLoss = `${price * (1 - settings.slPercent)}`;
     }
@@ -332,8 +337,8 @@ async function tradingStrategy(context: Context) {
         return;
     }
 
-    if (coolDownTimeout === undefined && (mustSell || mustbuy)) state.coolDownTimeout = (new Date()).getTime() + settings.coolDown;
-    if (!mustSell && !mustbuy && coolDownTimeout !== undefined) state.coolDownTimeout = undefined;
+    if (haveCoolDownSetting && coolDownTimeout === undefined && (mustSell || mustbuy)) state.coolDownTimeout = (new Date()).getTime() + settings.coolDown;
+    if (haveCoolDownSetting && !mustSell && !mustbuy && coolDownTimeout !== undefined) state.coolDownTimeout = undefined;
 }
 
 dotenv.config({ override: true });
