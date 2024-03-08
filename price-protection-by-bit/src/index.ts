@@ -4,7 +4,6 @@ import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import dotenv from 'dotenv';
 import { round } from './calculations.js';
 import { Logger } from './logger.js';
-import { stat } from 'fs';
 
 const commission = 0.0002;
 const precisionMap = new Map<string, SymbolPrecision>()
@@ -142,7 +141,7 @@ async function tradingStrategy(context: Context) {
     let haveShortStrikePrice = settings.shortStrikePrice > 0;
 
     let haveCoolDownSetting = settings.coolDown > 0;
-    let coolDownReady = haveCoolDownSetting || (coolDownTimeout != undefined && (new Date()).getTime() >= coolDownTimeout);
+    let coolDownReady = !haveCoolDownSetting || (coolDownTimeout != undefined && (new Date()).getTime() >= coolDownTimeout);
 
     if (haveLongStrikePrice && long.threshold > 0 && holdingLong && price > long.threshold && state.sellPrice !== long.breakEvenPrice) {
         await Logger.log(`sell price set to ${long.breakEvenPrice} as price:${price} crossed threshold:${long.threshold} for long position`);
