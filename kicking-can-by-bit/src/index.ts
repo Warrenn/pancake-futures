@@ -1,5 +1,5 @@
 import { setTimeout as asyncSleep } from 'timers/promises';
-import { OrderTriggerByV5, RestClientV5, WebsocketClient } from 'bybit-api'
+import { RestClientV5, WebsocketClient } from 'bybit-api'
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import dotenv from 'dotenv';
 import { round } from './calculations.js';
@@ -10,26 +10,24 @@ const precisionMap = new Map<string, SymbolPrecision>()
 precisionMap.set('ETHPERP', { pricePrecision: 2, sizePrecision: 3 });
 precisionMap.set('ETHUSDT', { pricePrecision: 2, sizePrecision: 3 });
 
+type OptionPositon = {
+    symbol: string
+    size: number
+    strikePrice: number
+    entryPrice: number
+    type: 'Put' | 'Call'
+}
+
 type State = {
     bid: number
     ask: number
     price: number
-    size: number
-    entryPrice: number
-    side: 'Buy' | 'Sell' | 'None'
-    buyPrice: number
-    sellPrice: number
-    long: DirectionState
-    short: DirectionState
-    coolDownTimeout: number | undefined
-}
-
-type DirectionState = {
-    orderId: string
-    breakEvenPrice: number
-    orderPrice: number
-    threshold: number
-    entryPrice: number
+    symbol: string
+    nextExpiry: string
+    options: OptionPositon[]
+    balance: number
+    upperStrikePrice: number
+    lowerStrikePrice: number
 }
 
 type SymbolPrecision = {
@@ -38,18 +36,16 @@ type SymbolPrecision = {
 }
 
 type Credentials = {
-    key: string
-    secret: string
+    apiKey: string
+    apiSecret: string
 }
 
 type Settings = {
-    longStrikePrice: number
-    shortStrikePrice: number
-    thresholdPercent: number
-    slPercent: number
-    coolDown: number
-    symbol: string
-    size: number
+    stepSize: number
+    stepOffset: number
+    base: string
+    quote: string
+    targetProfit: number
 }
 
 type Context = {
@@ -62,37 +58,11 @@ function orderbookUpdate(data: any, state: State, settings: Settings) {
     if (!data || !data.data || !data.data.b || !data.data.a) return;
     let topicParts = data.topic.split('.');
     if (!topicParts || topicParts.length !== 3) return;
-    if (topicParts[2] !== settings.symbol) return;
+    if (topicParts[2] !== state.symbol) return;
     if (data.data.b.length > 0 && data.data.b[0].length > 0) state.bid = parseFloat(data.data.b[0][0]);
     if (data.data.a.length > 0 && data.data.a[0].length > 0) state.ask = parseFloat(data.data.a[0][0]);
-    let precision = precisionMap.get(settings.symbol)?.pricePrecision || 2;
+    let precision = precisionMap.get(state.symbol)?.pricePrecision || 2;
     state.price = round((state.bid + state.ask) / 2, precision);
-}
-
-function positionUpdate(data: any, state: State, settings: Settings) {
-    if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
-    if (data.data[0].symbol !== settings.symbol) return;
-    state.size = Math.abs(parseFloat(data.data[0].size));
-    state.entryPrice = parseFloat(data.data[0].entryPrice);
-    state.side = data.data[0].side;
-}
-
-function orderUpdate(data: any, state: State, settings: Settings) {
-    if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
-    if (data.data[0].stopOrderType !== '') return;
-    if (data.data[0].symbol !== settings.symbol) return;
-    let direction: DirectionState = data.data[0].side === 'Buy' ? state.long : state.short;
-    switch (data.data[0].orderStatus) {
-        case 'Cancelled':
-        case 'Rejected':
-        case 'Filled':
-        case 'Deactivated':
-            direction.orderId = '';
-            break;
-        case 'New':
-            direction.orderId = data.data[0].orderId;
-            break;
-    }
 }
 
 function websocketCallback(state: State, settings: Settings): (response: any) => void {
@@ -103,12 +73,6 @@ function websocketCallback(state: State, settings: Settings): (response: any) =>
         switch (topic[0]) {
             case 'orderbook':
                 orderbookUpdate(data, state, settings);
-                break;
-            case 'position':
-                positionUpdate(data, state, settings);
-                break;
-            case 'order':
-                orderUpdate(data, state, settings);
                 break;
         }
     }
@@ -126,218 +90,108 @@ async function getSettings({ ssm, name, keyPrefix }: { ssm: SSMClient, name: str
     return JSON.parse(`${ssmParam.Parameter?.Value}`);
 }
 
+function getNextExpiry() {
+    let now = new Date();
+    let currentHour = now.getUTCHours();
+    let time = now.getTime();
+
+    if (currentHour >= 8) time += 24 * 60 * 60 * 1000;//24 hours
+    let expiryDate = new Date(time);
+    let expiryYear = `${expiryDate.getUTCFullYear()}`.substring(2);
+    let expiryMonth = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"][expiryDate.getUTCMonth()];
+    return `${expiryDate.getDate()}${expiryMonth}${expiryYear}`;
+}
+
+async function buyBackOptions({ options, state, settings, restClient }: { options: OptionPositon[]; settings: Settings, state: State; restClient: RestClientV5; }): Promise<void> {
+    for (let option of options) {
+        let response = await restClient.getOrderbook({ symbol: option.symbol, category: 'option' });
+        let askPrice = parseFloat(response.result.a[0][0]);
+        let cost = (askPrice * option.size) + (option.strikePrice * option.size * commission);
+        state.balance -= cost;
+        await Logger.log(`buying back option: ${option.symbol} ask:${askPrice} cost:${cost} balance:${state.balance}`);
+    }
+    state.options = state.options.filter(o => !options.includes(o));
+}
+
+async function sellPutOption({ strikePrice, state, settings, restClient }: { strikePrice: number; settings: Settings, state: State; restClient: RestClientV5; }): Promise<void> {
+    let symbol = `${settings.base}-${state.nextExpiry}-${strikePrice}-P`;
+    let response = await restClient.getOrderbook({ symbol, category: 'option' });
+    let bidPrice = parseFloat(response.result.b[0][0]);
+    let income = bidPrice - (strikePrice * commission);
+    state.balance += income;
+    await Logger.log(`selling put option: ${symbol} bid:${bidPrice} income:${income} balance:${state.balance}`);
+    state.options.push({
+        symbol,
+        size: 1,
+        strikePrice,
+        entryPrice: bidPrice,
+        type: 'Put'
+    });
+}
+
+async function sellCallOption({ strikePrice, settings, state, restClient }: { strikePrice: number; settings: Settings, state: State; restClient: RestClientV5; }): Promise<void> {
+    let symbol = `${settings.base}-${state.nextExpiry}-${strikePrice}-C`;
+    let response = await restClient.getOrderbook({ symbol, category: 'option' });
+    let bidPrice = parseFloat(response.result.b[0][0]);
+    let income = bidPrice - (strikePrice * commission);
+    state.balance += income;
+    await Logger.log(`selling call option: ${symbol} bid:${bidPrice} income:${income} balance:${state.balance}`);
+    state.options.push({
+        symbol,
+        size: 1,
+        strikePrice,
+        entryPrice: bidPrice,
+        type: 'Call'
+    });
+}
+
 async function tradingStrategy(context: Context) {
     let { state, settings, restClient } = context;
-    let { bid, ask, price, side, size, long, short, entryPrice, coolDownTimeout } = state;
+    let { bid, ask } = state;
 
-    let holdingLong = side === 'Buy' && size > 0;
-    let holdingShort = side === 'Sell' && size > 0;
-    let noPosition = size === 0;
+    if (bid < state.lowerStrikePrice && state.options.length > 0) {
+        let nextLowerStrikePrice = state.lowerStrikePrice - (settings.stepSize * settings.stepOffset);
+        let putOptions = state.options.filter(o => o.type === 'Put' && o.strikePrice === state.lowerStrikePrice);
 
-    let longFilled = size >= settings.size && side === 'Buy';
-    let shortFilled = size >= settings.size && side === 'Sell';
-
-    let haveLongStrikePrice = settings.longStrikePrice > 0;
-    let haveShortStrikePrice = settings.shortStrikePrice > 0;
-
-    let haveCoolDownSetting = settings.coolDown > 0;
-    let coolDownReady = !haveCoolDownSetting || (coolDownTimeout != undefined && (new Date()).getTime() >= coolDownTimeout);
-
-    if (haveLongStrikePrice && long.threshold > 0 && holdingLong && price > long.threshold && state.sellPrice !== long.breakEvenPrice) {
-        await Logger.log(`sell price set to ${long.breakEvenPrice} as price:${price} crossed threshold:${long.threshold} for long position`);
-        state.sellPrice = long.breakEvenPrice;
-    }
-    if (haveShortStrikePrice && short.threshold > 0 && holdingShort && price < short.threshold && state.buyPrice !== short.breakEvenPrice) {
-        await Logger.log(`buy price set to ${short.breakEvenPrice} as price:${price} crossed threshold:${short.threshold} for short position`);
-        state.buyPrice = short.breakEvenPrice;
-    }
-
-    if (haveLongStrikePrice && price < settings.longStrikePrice && noPosition && state.buyPrice !== settings.longStrikePrice) {
-        await Logger.log(`resetting long buy price, breakEvenPrice and threshold as price:${price} < strikePrice:${settings.longStrikePrice} and theres no position`);
-
-        state.buyPrice = settings.longStrikePrice;
-        long.orderId = ''
-        long.orderPrice = 0;
-        long.breakEvenPrice = 0;
-        long.threshold = 0;
-        long.entryPrice = 0;
-    }
-
-    if (haveShortStrikePrice && price > settings.shortStrikePrice && noPosition && state.sellPrice !== settings.shortStrikePrice) {
-        await Logger.log(`resetting short sell price, breakEvenPrice and threshold as price:${price} > strikePrice:${settings.shortStrikePrice} and theres no position`);
-
-        state.sellPrice = settings.shortStrikePrice;
-        short.orderId = ''
-        short.orderPrice = 0;
-        short.breakEvenPrice = 0;
-        short.threshold = 0;
-        short.entryPrice = 0;
-    }
-
-    if (haveLongStrikePrice && long.entryPrice !== entryPrice && holdingLong) {
-        long.entryPrice = entryPrice;
-        long.breakEvenPrice = entryPrice + (entryPrice * 2 * commission);
-        long.threshold = long.breakEvenPrice * (1 + settings.thresholdPercent);
-        await Logger.log(`calculating long breakEvenPrice:${long.breakEvenPrice} and threshold:${long.threshold} entryPrice:${entryPrice}`);
-    }
-
-    if (haveLongStrikePrice && short.entryPrice !== entryPrice && holdingShort) {
-        short.entryPrice = entryPrice;
-        short.breakEvenPrice = entryPrice - (entryPrice * 2 * commission);
-        short.threshold = short.breakEvenPrice * (1 - settings.thresholdPercent);
-        await Logger.log(`calculating short breakEvenPrice:${short.breakEvenPrice} and threshold:${short.threshold} entryPrice:${entryPrice}`);
-    }
-
-    let mustSell = state.sellPrice > 0 && bid < state.sellPrice && !shortFilled;
-    if (mustSell && short.orderId && short.orderPrice !== price && coolDownReady) {
-        short.orderPrice = price;
-        //update order
-        let { retCode, retMsg } = await restClient.amendOrder({
-            symbol: settings.symbol,
-            category: 'linear',
-            orderId: short.orderId,
-            price: `${price}`
+        await buyBackOptions({
+            options: putOptions,
+            settings,
+            state,
+            restClient
         });
-        if (retCode === 0 && retMsg === 'OK') {
-            await Logger.log(`ammend short order price:${price} symbol:${settings.symbol} orderId:${short.orderId}`);
-        }
-        else {
-            short.orderId = '';
-            await Logger.log(`failed to update short orderId:${short.orderId} retCode:${retCode} retMsg:${retMsg}`);
-        }
-        return;
-    }
-    if (!mustSell && short.orderId) {
-        await restClient.cancelOrder({
-            symbol: settings.symbol,
-            category: 'linear',
-            orderId: short.orderId
+
+        await sellPutOption({
+            strikePrice: nextLowerStrikePrice,
+            settings,
+            state,
+            restClient
         });
-        await Logger.log(`cancelling short order orderId:${short.orderId}`);
-        short.orderId = '';
+        state.lowerStrikePrice = nextLowerStrikePrice;
+
         return;
     }
 
-    let orderSize = settings.size;
-    let reduceOnly = false;
-    let slTriggerBy: OrderTriggerByV5 | undefined = undefined;
-    let stopLoss: string | undefined = undefined;
+    if (ask > state.upperStrikePrice && state.options.length > 0) {
+        let nextUpperStrikePrice = state.upperStrikePrice + (settings.stepSize * settings.stepOffset);
+        let callOptions = state.options.filter(o => o.type === 'Call' && o.strikePrice === state.upperStrikePrice);
 
-    if (mustSell && holdingLong) {
-        orderSize = size;
-        reduceOnly = true;
-    }
-    if (mustSell && !holdingLong && settings.slPercent > 0) {
-        slTriggerBy = 'MarkPrice';
-        stopLoss = `${price * (1 + settings.slPercent)}`;
-    }
-
-    if (mustSell && !short.orderId && coolDownReady) {
-        let symbol = settings.symbol;
-        short.orderPrice = price;
-        let precision = precisionMap.get(symbol)?.sizePrecision || 3;
-        let qty = `${round(orderSize, precision)}`;
-
-        //create sell order
-        let { retCode, retMsg, result: order } = await restClient.submitOrder({
-            category: 'linear',
-            symbol,
-            side: 'Sell',
-            orderType: 'Limit',
-            timeInForce: 'PostOnly',
-            price: `${price}`,
-            reduceOnly,
-            slTriggerBy,
-            stopLoss,
-            qty
+        await buyBackOptions({
+            options: callOptions,
+            settings,
+            state,
+            restClient
         });
-        if (retCode === 0 && retMsg === 'OK') {
-            await Logger.log(`short sell order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
-            if (order.orderId) short.orderId = order.orderId;
-        }
-        else {
-            await Logger.log(`short sell order failed price:${price} qty:${qty} symbol:${symbol} retCode:${retCode} reduceOnly:${reduceOnly} retMsg:${retMsg}`);
-        }
+
+        await sellCallOption({
+            strikePrice: nextUpperStrikePrice,
+            settings,
+            state,
+            restClient
+        });
+        state.upperStrikePrice = nextUpperStrikePrice;
+
         return;
     }
-
-    let mustbuy = state.buyPrice > 0 && ask > state.buyPrice && !longFilled;
-    if (mustbuy && long.orderId && long.orderPrice !== price && coolDownReady) {
-        long.orderPrice = price;
-
-        //update order
-        let { retCode, retMsg } = await restClient.amendOrder({
-            symbol: settings.symbol,
-            category: 'linear',
-            orderId: long.orderId,
-            price: `${price}`
-        });
-        if (retCode === 0 && retMsg === 'OK') {
-            await Logger.log(`ammend long order price:${price} symbol:${settings.symbol} orderId:${long.orderId}`);
-        }
-        else {
-            long.orderId = '';
-            await Logger.log(`failed to update long orderId:${long.orderId} retCode:${retCode} retMsg:${retMsg}`);
-        }
-        return;
-    }
-
-    if (!mustbuy && long.orderId) {
-        await restClient.cancelOrder({
-            symbol: settings.symbol,
-            category: 'linear',
-            orderId: long.orderId
-        });
-        await Logger.log(`cancelling long order orderId:${long.orderId}`);
-        long.orderId = '';
-        return;
-    }
-
-    orderSize = settings.size;
-    reduceOnly = false
-    slTriggerBy = undefined;
-    stopLoss = undefined;
-
-    if (mustbuy && holdingShort) {
-        orderSize = size;
-        reduceOnly = true;
-    }
-    if (mustbuy && !holdingLong && settings.slPercent > 0) {
-        slTriggerBy = 'MarkPrice';
-        stopLoss = `${price * (1 - settings.slPercent)}`;
-    }
-
-    if (mustbuy && !long.orderId && coolDownReady) {
-        let symbol = settings.symbol;
-        long.orderPrice = price;
-        let precision = precisionMap.get(symbol)?.sizePrecision || 3;
-        let qty = `${round(orderSize, precision)}`;
-
-        //create buy order
-        let { retCode, retMsg, result: order } = await restClient.submitOrder({
-            category: 'linear',
-            symbol,
-            side: 'Buy',
-            orderType: 'Limit',
-            timeInForce: 'PostOnly',
-            price: `${price}`,
-            reduceOnly,
-            slTriggerBy,
-            stopLoss,
-            qty
-        });
-        if (retCode === 0 && retMsg === 'OK') {
-            await Logger.log(`long buy order price:${price} qty:${qty} symbol:${symbol} orderId:${order.orderId}`);
-            if (order.orderId) long.orderId = order.orderId;
-        }
-        else {
-            await Logger.log(`long buy order failed price:${price} qty:${qty} symbol:${symbol} reduceOnly:${reduceOnly} retCode:${retCode} retMsg:${retMsg}`);
-        }
-        return;
-    }
-
-    if (haveCoolDownSetting && coolDownTimeout === undefined && (mustSell || mustbuy)) state.coolDownTimeout = (new Date()).getTime() + settings.coolDown;
-    if (haveCoolDownSetting && !mustSell && !mustbuy && coolDownTimeout !== undefined) state.coolDownTimeout = undefined;
 }
 
 dotenv.config({ override: true });
@@ -355,80 +209,52 @@ try {
     const apiCredentials = await getCredentials({ ssm, name: 'api-credentials', apiCredentialsKeyPrefix: keyPrefix });
     const settings = await getSettings({ ssm, name: 'settings', keyPrefix });
 
+    let nextExpiry = getNextExpiry();
+
     let state: State = {
-        bid: 0,
-        ask: 0,
-        buyPrice: settings.longStrikePrice,
-        entryPrice: 0,
-        price: 0,
-        sellPrice: settings.shortStrikePrice,
-        side: 'None',
-        size: 0,
-        bounceCount: 0,
-        coolDownTimeout: undefined,
-        long: {
-            breakEvenPrice: 0,
-            orderId: '',
-            orderPrice: 0,
-            entryPrice: 0,
-            threshold: 0
-        },
-        short: {
-            breakEvenPrice: 0,
-            orderId: '',
-            orderPrice: 0,
-            entryPrice: 0,
-            threshold: 0
-        }
+        symbol: `${settings.base}${settings.quote}`,
+        nextExpiry,
+        balance: 0
     } as State;
 
     const socketClient = new WebsocketClient({
         market: 'v5',
         testnet: useTestNet,
-        key: apiCredentials.key,
-        secret: apiCredentials.secret
+        key: apiCredentials.apiKey,
+        secret: apiCredentials.apiSecret
     });
 
     const restClient = new RestClientV5({
         testnet: useTestNet,
-        secret: apiCredentials.secret,
-        key: apiCredentials.key
+        secret: apiCredentials.apiSecret,
+        key: apiCredentials.apiKey
     });
 
-    let { result: { list: orders } } = await restClient.getActiveOrders({
-        symbol: settings.symbol,
-        category: 'linear'
+    let response = await restClient.getOrderbook({ symbol: state.symbol, category: 'linear' });
+    let price = (parseFloat(response.result.a[0][0]) + parseFloat(response.result.b[0][0])) / 2;
+    let midPrice = round(price / settings.stepSize, 0) * settings.stepSize;
+    state.upperStrikePrice = midPrice + settings.stepSize;
+    state.lowerStrikePrice = midPrice - settings.stepSize;
+
+    await sellCallOption({
+        strikePrice: state.upperStrikePrice,
+        state,
+        settings,
+        restClient
     });
 
-    orders = orders?.filter(o => !o.triggerPrice && o.symbol === settings.symbol);
-    for (let i = 0; i < orders?.length || 0; i++) {
-        let order = orders[i];
-        if (order.side === 'Buy') {
-            state.long.orderId = order.orderId;
-            state.long.orderPrice = parseFloat(order.price);
-        }
-        if (order.side === 'Sell') {
-            state.short.orderId = order.orderId;
-            state.short.orderPrice = parseFloat(order.price);
-        }
-    }
-
-    let { result: { list: [position] } } = await restClient.getPositionInfo({
-        symbol: settings.symbol,
-        category: 'linear'
+    await sellPutOption({
+        strikePrice: state.lowerStrikePrice,
+        state,
+        settings,
+        restClient
     });
-
-    if (position && position.positionValue) {
-        state.size = Math.abs(parseFloat(position.size));
-        state.entryPrice = parseFloat(position.avgPrice);
-        state.side = position.side
-    }
 
     socketClient.on('update', websocketCallback(state, settings));
 
-    await socketClient.subscribeV5(`orderbook.1.${settings.symbol}`, 'linear');
-    await socketClient.subscribeV5('order', 'linear');
-    await socketClient.subscribeV5('position', 'linear');
+    console.log(response);
+
+    await socketClient.subscribeV5(`orderbook.1.${state.symbol}`, 'linear');
 
     await Logger.log(`state: ${JSON.stringify(state)}`);
     await Logger.log(`settings: ${JSON.stringify(settings)}`);
@@ -449,3 +275,4 @@ catch (error) {
     await Logger.log(`error: message:${err.message} stack:${err.stack}`);
     process.exit(1);
 }
+

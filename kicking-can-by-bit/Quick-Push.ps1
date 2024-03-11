@@ -5,7 +5,7 @@ param (
     [String]
     $RepoUri= "352842384468.dkr.ecr.af-south-1.amazonaws.com/kicking-can-by-bit",
     [String]
-    $ImageName = "priceprotectionbybit",
+    $ImageName = "kickingcanbybit",
     [String]
     $ImageTag = "latest"
 )
