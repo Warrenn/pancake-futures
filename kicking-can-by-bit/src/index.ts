@@ -214,7 +214,13 @@ try {
     let state: State = {
         symbol: `${settings.base}${settings.quote}`,
         nextExpiry,
-        balance: 0
+        balance: 0,
+        options: [],
+        bid: 0,
+        ask: 0,
+        lowerStrikePrice: 0,
+        upperStrikePrice: 0,
+        price: 0
     } as State;
 
     const socketClient = new WebsocketClient({

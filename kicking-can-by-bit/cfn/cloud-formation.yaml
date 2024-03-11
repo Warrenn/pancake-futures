@@ -54,7 +54,7 @@ Parameters:
   EnvName:
     Type: String
     Description: The environment name
-    Default: dev
+    Default: live
 
   UseTestNet:
     Type: String
