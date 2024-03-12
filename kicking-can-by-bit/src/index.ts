@@ -39,8 +39,8 @@ type SymbolPrecision = {
 }
 
 type Credentials = {
-    apiKey: string
-    apiSecret: string
+    key: string
+    secret: string
 }
 
 type Settings = {
@@ -151,7 +151,6 @@ async function sellCallOption({ strikePrice, nextExpiry, targetProfit, settings,
     let expiryString = getExpiryString(nextExpiry.getTime());
     let symbol = `${settings.base}-${expiryString}-${strikePrice}-C`;
     let response = await restClient.getOrderbook({ symbol, category: 'option' });
-    await Logger.log(`response: ${JSON.stringify(response.result)}`);
     let bidPrice = parseFloat(response.result.b[0][0]);
 
     let income = bidPrice - (strikePrice * commission);
@@ -333,14 +332,14 @@ try {
     const socketClient = new WebsocketClient({
         market: 'v5',
         testnet: useTestNet,
-        key: apiCredentials.apiKey,
-        secret: apiCredentials.apiSecret
+        key: apiCredentials.key,
+        secret: apiCredentials.secret
     });
 
     const restClient = new RestClientV5({
         testnet: useTestNet,
-        secret: apiCredentials.apiSecret,
-        key: apiCredentials.apiKey
+        secret: apiCredentials.secret,
+        key: apiCredentials.key
     });
 
 
