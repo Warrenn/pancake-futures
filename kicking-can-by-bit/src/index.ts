@@ -48,6 +48,7 @@ type Settings = {
     stepOffset: number
     base: string
     quote: string
+    maxSize: number
     targetProfit: number
 }
 
@@ -153,6 +154,7 @@ async function sellPutOption({ strikePrice, nextExpiry, targetProfit, state, set
     let income = bidPrice - (strikePrice * commission);
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let size = round(targetProfit / income, sizePrecision);
+    size = settings.maxSize > 0 && size > settings.maxSize ? settings.maxSize : size;
     let qty = `${size}`;
 
     let { retCode, retMsg } = await restClient.submitOrder({
@@ -189,6 +191,7 @@ async function sellCallOption({ strikePrice, nextExpiry, targetProfit, settings,
     let income = bidPrice - (strikePrice * commission);
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let size = round(targetProfit / income, sizePrecision);
+    size = settings.maxSize > 0 && size > settings.maxSize ? settings.maxSize : size;
     let qty = `${size}`;
 
     let { retCode, retMsg } = await restClient.submitOrder({
