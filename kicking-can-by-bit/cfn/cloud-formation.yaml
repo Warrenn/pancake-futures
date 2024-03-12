@@ -44,7 +44,7 @@ Parameters:
   LogGroupName:
     Type: String
     Description: The name of the cloudwatch log group used for logging
-    Default: /dev/kicking-can-by-bit
+    Default: /live/kicking-can-by-bit
 
   AppPrefix:
     Type: String
@@ -59,7 +59,7 @@ Parameters:
   UseTestNet:
     Type: String
     Description: whether to use the testnet or not
-    Default: "true"
+    Default: "false"
 
   Region:
     Type: String

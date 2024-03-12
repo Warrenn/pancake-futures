@@ -9,10 +9,12 @@ const commission = 0.0002;
 const precisionMap = new Map<string, SymbolPrecision>()
 precisionMap.set('ETHPERP', { pricePrecision: 2, sizePrecision: 3 });
 precisionMap.set('ETHUSDT', { pricePrecision: 2, sizePrecision: 3 });
+precisionMap.set('ETHOPT', { pricePrecision: 2, sizePrecision: 1 });
 
 type OptionPositon = {
     symbol: string
     size: number
+    expiry: string
     strikePrice: number
     entryPrice: number
     type: 'Put' | 'Call'
@@ -108,7 +110,7 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
         let askPrice = parseFloat(response.result.a[0][0]);
         let cost = (askPrice * option.size) + (option.strikePrice * option.size * commission);
         state.balance -= cost;
-        await Logger.log(`buying back option: ${option.symbol} ask:${askPrice} cost:${cost} balance:${state.balance}`);
+        await Logger.log(`buying back option: ${option.symbol} ask:${askPrice} size:${option.size} strikePrice:${option.strikePrice} cost:${cost} balance:${state.balance}`);
     }
     state.options = state.options.filter(o => !options.includes(o));
 }
@@ -117,13 +119,18 @@ async function sellPutOption({ strikePrice, state, settings, restClient }: { str
     let symbol = `${settings.base}-${state.nextExpiry}-${strikePrice}-P`;
     let response = await restClient.getOrderbook({ symbol, category: 'option' });
     let bidPrice = parseFloat(response.result.b[0][0]);
+    let halfTarget = settings.targetProfit / 2;
     let income = bidPrice - (strikePrice * commission);
-    state.balance += income;
-    await Logger.log(`selling put option: ${symbol} bid:${bidPrice} income:${income} balance:${state.balance}`);
+    let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
+    let size = round(halfTarget / income, sizePrecision);
+
+    state.balance += size * halfTarget;
+    await Logger.log(`selling put option: ${symbol} bid:${bidPrice} income:${income} balance:${state.balance} size:${size} strikePrice:${strikePrice}`);
     state.options.push({
         symbol,
-        size: 1,
+        size: size,
         strikePrice,
+        expiry: state.nextExpiry,
         entryPrice: bidPrice,
         type: 'Put'
     });
@@ -132,14 +139,19 @@ async function sellPutOption({ strikePrice, state, settings, restClient }: { str
 async function sellCallOption({ strikePrice, settings, state, restClient }: { strikePrice: number; settings: Settings, state: State; restClient: RestClientV5; }): Promise<void> {
     let symbol = `${settings.base}-${state.nextExpiry}-${strikePrice}-C`;
     let response = await restClient.getOrderbook({ symbol, category: 'option' });
+    await Logger.log(`response: ${JSON.stringify(response.result)}`);
     let bidPrice = parseFloat(response.result.b[0][0]);
+    let halfTarget = settings.targetProfit / 2;
     let income = bidPrice - (strikePrice * commission);
-    state.balance += income;
-    await Logger.log(`selling call option: ${symbol} bid:${bidPrice} income:${income} balance:${state.balance}`);
+    let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
+    let size = round(halfTarget / income, sizePrecision);
+    state.balance += size & halfTarget;
+    await Logger.log(`selling call option: ${symbol} bid:${bidPrice} income:${income} balance:${state.balance} size:${size} strikePrice:${strikePrice}`);
     state.options.push({
         symbol,
-        size: 1,
+        size: size,
         strikePrice,
+        expiry: state.nextExpiry,
         entryPrice: bidPrice,
         type: 'Call'
     });
@@ -147,7 +159,31 @@ async function sellCallOption({ strikePrice, settings, state, restClient }: { st
 
 async function tradingStrategy(context: Context) {
     let { state, settings, restClient } = context;
-    let { bid, ask } = state;
+    let { bid, ask, price } = state;
+
+    let nextExpiry = getNextExpiry();
+    if (nextExpiry !== state.nextExpiry) state.nextExpiry = nextExpiry;
+
+    state.options = state.options.filter(o => o.expiry !== state.nextExpiry);
+    if (!state.options || state.options.length === 0) {
+        let midPrice = round(price / settings.stepSize, 0) * settings.stepSize;
+        state.upperStrikePrice = midPrice + settings.stepSize;
+        state.lowerStrikePrice = midPrice - settings.stepSize;
+    
+        await sellCallOption({
+            strikePrice: state.upperStrikePrice,
+            state,
+            settings,
+            restClient
+        });
+    
+        await sellPutOption({
+            strikePrice: state.lowerStrikePrice,
+            state,
+            settings,
+            restClient
+        });
+    }
 
     if (bid < state.lowerStrikePrice && state.options.length > 0) {
         let nextLowerStrikePrice = state.lowerStrikePrice - (settings.stepSize * settings.stepOffset);
@@ -236,29 +272,7 @@ try {
         key: apiCredentials.apiKey
     });
 
-    let response = await restClient.getOrderbook({ symbol: state.symbol, category: 'linear' });
-    let price = (parseFloat(response.result.a[0][0]) + parseFloat(response.result.b[0][0])) / 2;
-    let midPrice = round(price / settings.stepSize, 0) * settings.stepSize;
-    state.upperStrikePrice = midPrice + settings.stepSize;
-    state.lowerStrikePrice = midPrice - settings.stepSize;
-
-    await sellCallOption({
-        strikePrice: state.upperStrikePrice,
-        state,
-        settings,
-        restClient
-    });
-
-    await sellPutOption({
-        strikePrice: state.lowerStrikePrice,
-        state,
-        settings,
-        restClient
-    });
-
     socketClient.on('update', websocketCallback(state, settings));
-
-    console.log(response);
 
     await socketClient.subscribeV5(`orderbook.1.${state.symbol}`, 'linear');
 
