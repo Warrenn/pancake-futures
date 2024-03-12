@@ -154,7 +154,11 @@ async function sellPutOption({ strikePrice, nextExpiry, targetProfit, state, set
     let income = bidPrice - (strikePrice * commission);
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let size = round(targetProfit / income, sizePrecision);
-    size = settings.maxSize > 0 && size > settings.maxSize ? settings.maxSize : size;
+
+    if (settings.maxSize > 0 && size > settings.maxSize) {
+        Logger.log(`cant sell put ${symbol} as max size reached: ${size} > ${settings.maxSize}`);
+        return;
+    }
     let qty = `${size}`;
 
     let { retCode, retMsg } = await restClient.submitOrder({
@@ -191,7 +195,11 @@ async function sellCallOption({ strikePrice, nextExpiry, targetProfit, settings,
     let income = bidPrice - (strikePrice * commission);
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let size = round(targetProfit / income, sizePrecision);
-    size = settings.maxSize > 0 && size > settings.maxSize ? settings.maxSize : size;
+
+    if (settings.maxSize > 0 && size > settings.maxSize) {
+        Logger.log(`cant sell call ${symbol} as max size reached: ${size} > ${settings.maxSize}`);
+        return;
+    }
     let qty = `${size}`;
 
     let { retCode, retMsg } = await restClient.submitOrder({
