@@ -263,7 +263,7 @@ async function tradingStrategy(context: Context) {
 
     let nextExpiry = getNextExpiry();
     let nextTime = nextExpiry.getTime();
-    let nextOptions = state.options?.filter(o => o.expiry.getTime() == nextTime) || [];
+    let nextOptions = state.options?.filter(o => o.expiry.getTime() === nextTime) || [];
 
     if (state.nextExpiry === undefined || nextExpiry.getTime() !== state.nextExpiry.getTime()) {
         state.nextExpiry = nextExpiry;
