@@ -268,6 +268,7 @@ async function tradingStrategy(context: Context) {
     if (state.nextExpiry === undefined || nextExpiry.getTime() !== state.nextExpiry.getTime()) {
         state.nextExpiry = nextExpiry;
 
+        state.options = state.options?.filter(o => o.expiry.getTime() >= nextTime) || [];
         if (!nextOptions || nextOptions.length === 0) {
             let midPrice = round(price / settings.stepSize, 0) * settings.stepSize;
             let offset = settings.stepSize * settings.stepOffset;
