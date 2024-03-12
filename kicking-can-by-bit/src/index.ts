@@ -112,15 +112,34 @@ function getNextExpiry() {
     return expiryDate;
 }
 
-async function buyBackOptions({ options, state, restClient }: { options: OptionPositon[]; state: State; restClient: RestClientV5; }): Promise<number> {
+async function buyBackOptions({ options, state, settings, restClient }: { options: OptionPositon[]; state: State; settings: Settings; restClient: RestClientV5; }): Promise<number> {
     let totalCost = 0;
     for (let option of options) {
         let response = await restClient.getOrderbook({ symbol: option.symbol, category: 'option' });
         let askPrice = parseFloat(response.result.a[0][0]);
-        let cost = (askPrice * option.size) + (option.strikePrice * option.size * commission);
-        state.balance -= cost;
-        totalCost += cost;
-        await Logger.log(`buying back option: ${option.symbol} ask:${askPrice} size:${option.size} strikePrice:${option.strikePrice} cost:${cost} balance:${state.balance}`);
+        let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
+        let qty = `${round(option.size, sizePrecision)}`;
+
+        let { retCode, retMsg } = await restClient.submitOrder({
+            symbol: option.symbol,
+            side: 'Buy',
+            orderType: 'Market',
+            timeInForce: 'GTC',
+            qty,
+            category: 'option',
+            reduceOnly: true
+        });
+
+        if (retCode === 0 && retMsg === 'OK') {
+            let cost = (askPrice * option.size) + (option.strikePrice * option.size * commission);
+            state.balance -= cost;
+            totalCost += cost;
+
+            await Logger.log(`buying back option: ${option.symbol} ask:${askPrice} size:${option.size} strikePrice:${option.strikePrice} cost:${cost} balance:${state.balance}`);
+        }
+        else {
+            await Logger.log(`error buying back option: ${option.symbol} retCode:${retCode} retMsg:${retMsg}`);
+        }
     }
     state.options = state.options.filter(o => !options.includes(o));
     return totalCost;
@@ -134,17 +153,32 @@ async function sellPutOption({ strikePrice, nextExpiry, targetProfit, state, set
     let income = bidPrice - (strikePrice * commission);
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let size = round(targetProfit / income, sizePrecision);
+    let qty = `${size}`;
 
-    state.balance += size * income;
-    await Logger.log(`selling put option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.balance}`);
-    state.options.push({
+    let { retCode, retMsg } = await restClient.submitOrder({
         symbol,
-        size: size,
-        strikePrice,
-        expiry: nextExpiry,
-        entryPrice: bidPrice,
-        type: 'Put'
+        side: 'Sell',
+        orderType: 'Market',
+        timeInForce: 'GTC',
+        qty,
+        category: 'option'
     });
+
+    if (retCode === 0 && retMsg === 'OK') {
+        state.balance += size * income;
+        await Logger.log(`selling put option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.balance}`);
+        state.options.push({
+            symbol,
+            size: size,
+            strikePrice,
+            expiry: nextExpiry,
+            entryPrice: bidPrice,
+            type: 'Put'
+        });
+    }
+    else {
+        await Logger.log(`error selling put option: ${symbol} retCode:${retCode} retMsg:${retMsg}`);
+    }
 }
 
 async function sellCallOption({ strikePrice, nextExpiry, targetProfit, settings, state, restClient }: { strikePrice: number; nextExpiry: Date; targetProfit: number; settings: Settings, state: State; restClient: RestClientV5; }): Promise<void> {
@@ -152,20 +186,34 @@ async function sellCallOption({ strikePrice, nextExpiry, targetProfit, settings,
     let symbol = `${settings.base}-${expiryString}-${strikePrice}-C`;
     let response = await restClient.getOrderbook({ symbol, category: 'option' });
     let bidPrice = parseFloat(response.result.b[0][0]);
-
     let income = bidPrice - (strikePrice * commission);
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let size = round(targetProfit / income, sizePrecision);
-    state.balance += size * income;
-    await Logger.log(`selling call option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.balance}`);
-    state.options.push({
+    let qty = `${size}`;
+
+    let { retCode, retMsg } = await restClient.submitOrder({
         symbol,
-        size: size,
-        strikePrice,
-        expiry: nextExpiry,
-        entryPrice: bidPrice,
-        type: 'Call'
+        side: 'Sell',
+        orderType: 'Market',
+        timeInForce: 'GTC',
+        qty,
+        category: 'option'
     });
+
+    if (retCode === 0 && retMsg === 'OK') {
+        state.balance += size * income;
+        await Logger.log(`selling call option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.balance}`);
+        state.options.push({
+            symbol,
+            size: size,
+            strikePrice,
+            expiry: nextExpiry,
+            entryPrice: bidPrice,
+            type: 'Call'
+        });
+    } else {
+        await Logger.log(`error selling call option: ${symbol} retCode:${retCode} retMsg:${retMsg}`);
+    }
 }
 
 async function getOptions({ restClient, settings }: { restClient: RestClientV5; settings: Settings }): Promise<OptionPositon[]> {
@@ -261,6 +309,7 @@ async function tradingStrategy(context: Context) {
 
         let cost = await buyBackOptions({
             options: putOptions,
+            settings,
             state,
             restClient
         });
@@ -284,6 +333,7 @@ async function tradingStrategy(context: Context) {
 
         let cost = await buyBackOptions({
             options: callOptions,
+            settings,
             state,
             restClient
         });
