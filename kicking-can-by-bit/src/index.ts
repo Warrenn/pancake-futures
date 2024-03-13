@@ -185,6 +185,7 @@ async function sellPutOption({ strikePrice, nextExpiry, targetProfit, state, set
     let income = bidPrice - (strikePrice * commission);
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let size = round(targetProfit / income, sizePrecision);
+    if (size <= 0) return;
     let notionalValue = size * strikePrice;
 
     if (settings.maxNotionalValue > 0 && notionalValue > settings.maxNotionalValue) {
@@ -233,6 +234,7 @@ async function sellCallOption({ strikePrice, nextExpiry, targetProfit, settings,
     let income = bidPrice - (strikePrice * commission);
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let size = round(targetProfit / income, sizePrecision);
+    if (size <= 0) return;
     let notionalValue = size * strikePrice;
 
     if (settings.maxNotionalValue > 0 && notionalValue > settings.maxNotionalValue) {
