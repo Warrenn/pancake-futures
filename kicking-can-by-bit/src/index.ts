@@ -26,7 +26,7 @@ type State = {
     ask: number
     price: number
     symbol: string
-    nextExpiry: Date | undefined
+    nextExpiry: Date
     options: OptionPositon[]
     dailyBalance: number
     bounceCount: number
@@ -395,17 +395,6 @@ try {
     const apiCredentials = await getCredentials({ ssm, name: 'api-credentials', apiCredentialsKeyPrefix: keyPrefix });
     const settings = await getSettings({ ssm, name: 'settings', keyPrefix });
 
-    let state: State = {
-        symbol: `${settings.base}${settings.quote}`,
-        nextExpiry: undefined,
-        dailyBalance: 0,
-        options: [],
-        bid: 0,
-        ask: 0,
-        price: 0,
-        bounceCount: 0
-    } as State;
-
     const socketClient = new WebsocketClient({
         market: 'v5',
         testnet: useTestNet,
@@ -419,9 +408,17 @@ try {
         key: apiCredentials.key
     });
 
-
     let options = await getOptions({ settings, restClient });
-    state.options = options;
+    let state: State = {
+        symbol: `${settings.base}${settings.quote}`,
+        nextExpiry: getNextExpiry(),
+        dailyBalance: 0,
+        options,
+        bid: 0,
+        ask: 0,
+        price: 0,
+        bounceCount: 0
+    } as State;
 
     socketClient.on('update', websocketCallback(state));
 
@@ -452,4 +449,5 @@ catch (error) {
     await Logger.log(`error: message:${err.message} stack:${err.stack}`);
     process.exit(1);
 }
+
 
