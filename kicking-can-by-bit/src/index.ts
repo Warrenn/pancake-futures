@@ -367,8 +367,7 @@ async function tradingStrategy(context: Context) {
         return;
     }
 
-    if (lowerStrikePrice) {
-
+    if (lowerStrikePrice !== undefined) {
         await sellPutOption({
             strikePrice: lowerStrikePrice,
             targetProfit,
@@ -379,9 +378,6 @@ async function tradingStrategy(context: Context) {
         });
         return;
     }
-}
-
-if (state.bounceCount > 0 && state.bounceCount < settings.bounce && upperStrikePrice != undefined) {
 }
 
 dotenv.config({ override: true });
@@ -406,9 +402,8 @@ try {
         options: [],
         bid: 0,
         ask: 0,
-        lowerStrikePrice: 0,
-        upperStrikePrice: 0,
-        price: 0
+        price: 0,
+        bounceCount: 0
     } as State;
 
     const socketClient = new WebsocketClient({
