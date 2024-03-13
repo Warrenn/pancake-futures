@@ -122,6 +122,22 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
             await Logger.log(`error getting orderbook for option: ${option.symbol} retCode:${retCode} retMsg:${retMsg}`);
             continue;
         }
+        let expiryString = getExpiryString(option.expiry.getTime());
+        let strikePrice = option.strikePrice - (settings.stepSize * settings.stepOffset);
+        let symbol = `${settings.base}-${expiryString}-${strikePrice}-P`;
+        ({ retCode, retMsg, result } = await restClient.getOrderbook({ symbol, category: 'option' }));
+        if (retCode !== 0 || !result || !result.b || result.b.length === 0 || !result.b[0]) {
+            await Logger.log(`cant buy back option:${option.symbol} as no counter order for:${symbol} retCode:${retCode} retMsg:${retMsg}`);
+            continue;
+        }
+        strikePrice = option.strikePrice + (settings.stepSize * settings.stepOffset);
+        symbol = `${settings.base}-${expiryString}-${strikePrice}-C`;
+        ({ retCode, retMsg, result } = await restClient.getOrderbook({ symbol, category: 'option' }));
+        if (retCode !== 0 || !result || !result.b || result.b.length === 0 || !result.b[0]) {
+            await Logger.log(`cant buy back option:${option.symbol} as no counter order for:${symbol} retCode:${retCode} retMsg:${retMsg}`);
+            continue;
+        }
+
         let askPrice = parseFloat(result.a[0][0]);
         let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
         let qty = `${round(option.size, sizePrecision)}`;
