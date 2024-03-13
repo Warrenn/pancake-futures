@@ -28,9 +28,8 @@ type State = {
     symbol: string
     nextExpiry: Date | undefined
     options: OptionPositon[]
-    balance: number
-    upperStrikePrice: number
-    lowerStrikePrice: number
+    dailyBalance: number
+    bounceCount: number
 }
 
 type SymbolPrecision = {
@@ -46,9 +45,11 @@ type Credentials = {
 type Settings = {
     stepSize: number
     stepOffset: number
+    bounce: number
     base: string
     quote: string
-    maxSize: number
+    maxNotionalValue: number
+    maxLoss: number
     targetProfit: number
 }
 
@@ -116,27 +117,36 @@ function getNextExpiry() {
 async function buyBackOptions({ options, state, settings, restClient }: { options: OptionPositon[]; state: State; settings: Settings; restClient: RestClientV5; }): Promise<number> {
     let totalCost = 0;
     for (let option of options) {
-        let response = await restClient.getOrderbook({ symbol: option.symbol, category: 'option' });
-        let askPrice = parseFloat(response.result.a[0][0]);
+        let { retCode, retMsg, result } = await restClient.getOrderbook({ symbol: option.symbol, category: 'option' });
+        if (retCode !== 0 || !result || !result.a || result.a.length === 0 || !result.a[0]) {
+            await Logger.log(`error getting orderbook for option: ${option.symbol} retCode:${retCode} retMsg:${retMsg}`);
+            continue;
+        }
+        let askPrice = parseFloat(result.a[0][0]);
         let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
         let qty = `${round(option.size, sizePrecision)}`;
+        let cost = (askPrice * option.size) + (option.strikePrice * option.size * commission);
 
-        let { retCode, retMsg } = await restClient.submitOrder({
-            symbol: option.symbol,
-            side: 'Buy',
-            orderType: 'Market',
-            timeInForce: 'GTC',
-            qty,
-            category: 'option',
-            reduceOnly: true
-        });
+        if (settings.maxLoss > 0 && cost > settings.maxLoss) {
+            Logger.log(`cant buy back option ${option.symbol} as cost: ${cost} exceeded maxLoss: ${settings.maxLoss}`);
+            continue;
+        }
+
+        // ({ retCode, retMsg } = await restClient.submitOrder({
+        //     symbol: option.symbol,
+        //     side: 'Buy',
+        //     orderType: 'Market',
+        //     timeInForce: 'GTC',
+        //     qty,
+        //     category: 'option',
+        //     reduceOnly: true
+        // }));
 
         if (retCode === 0 && retMsg === 'OK') {
-            let cost = (askPrice * option.size) + (option.strikePrice * option.size * commission);
-            state.balance -= cost;
+            state.dailyBalance -= cost;
             totalCost += cost;
 
-            await Logger.log(`buying back option: ${option.symbol} ask:${askPrice} size:${option.size} strikePrice:${option.strikePrice} cost:${cost} balance:${state.balance}`);
+            await Logger.log(`buying back option: ${option.symbol} ask:${askPrice} size:${option.size} strikePrice:${option.strikePrice} cost:${cost} balance:${state.dailyBalance}`);
         }
         else {
             await Logger.log(`error buying back option: ${option.symbol} retCode:${retCode} retMsg:${retMsg}`);
@@ -147,32 +157,39 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
 }
 
 async function sellPutOption({ strikePrice, nextExpiry, targetProfit, state, settings, restClient }: { strikePrice: number; nextExpiry: Date, targetProfit: number, settings: Settings, state: State; restClient: RestClientV5; }): Promise<void> {
+    if (targetProfit <= 0) return;
     let expiryString = getExpiryString(nextExpiry.getTime());
     let symbol = `${settings.base}-${expiryString}-${strikePrice}-P`;
-    let response = await restClient.getOrderbook({ symbol, category: 'option' });
-    let bidPrice = parseFloat(response.result.b[0][0]);
+    let { retCode, retMsg, result } = await restClient.getOrderbook({ symbol, category: 'option' });
+    if (retCode !== 0 || !result || !result.b || result.b.length === 0) {
+        await Logger.log(`error getting orderbook for put option: ${symbol} retCode:${retCode} retMsg:${retMsg}`);
+        return;
+    }
+    let bidPrice = parseFloat(result.b[0][0]);
     let income = bidPrice - (strikePrice * commission);
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let size = round(targetProfit / income, sizePrecision);
+    let notionalValue = size * strikePrice;
 
-    if (settings.maxSize > 0 && size > settings.maxSize) {
-        Logger.log(`cant sell put ${symbol} as max size reached: ${size} > ${settings.maxSize}`);
+    if (settings.maxNotionalValue > 0 && notionalValue > settings.maxNotionalValue) {
+        Logger.log(`cant sell put ${symbol} as notionalValue: ${notionalValue} exceeded maxNotionalValue: ${settings.maxNotionalValue}`);
         return;
     }
     let qty = `${size}`;
 
-    let { retCode, retMsg } = await restClient.submitOrder({
-        symbol,
-        side: 'Sell',
-        orderType: 'Market',
-        timeInForce: 'GTC',
-        qty,
-        category: 'option'
-    });
+    // let { retCode, retMsg } = await restClient.submitOrder({
+    //     symbol,
+    //     side: 'Sell',
+    //     orderType: 'Market',
+    //     timeInForce: 'GTC',
+    //     qty,
+    //     category: 'option'
+    // });
 
     if (retCode === 0 && retMsg === 'OK') {
-        state.balance += size * income;
-        await Logger.log(`selling put option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.balance}`);
+        state.dailyBalance += size * income;
+        state.bounceCount++;
+        await Logger.log(`selling put option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.dailyBalance}`);
         state.options.push({
             symbol,
             size: size,
@@ -188,32 +205,39 @@ async function sellPutOption({ strikePrice, nextExpiry, targetProfit, state, set
 }
 
 async function sellCallOption({ strikePrice, nextExpiry, targetProfit, settings, state, restClient }: { strikePrice: number; nextExpiry: Date; targetProfit: number; settings: Settings, state: State; restClient: RestClientV5; }): Promise<void> {
+    if (targetProfit <= 0) return;
     let expiryString = getExpiryString(nextExpiry.getTime());
     let symbol = `${settings.base}-${expiryString}-${strikePrice}-C`;
-    let response = await restClient.getOrderbook({ symbol, category: 'option' });
-    let bidPrice = parseFloat(response.result.b[0][0]);
+    let { retCode, retMsg, result } = await restClient.getOrderbook({ symbol, category: 'option' });
+    if (retCode !== 0 || !result || !result.b || result.b.length === 0) {
+        await Logger.log(`error getting orderbook for call option: ${symbol} retCode:${retCode} retMsg:${retMsg}`);
+        return;
+    }
+    let bidPrice = parseFloat(result.b[0][0]);
     let income = bidPrice - (strikePrice * commission);
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let size = round(targetProfit / income, sizePrecision);
+    let notionalValue = size * strikePrice;
 
-    if (settings.maxSize > 0 && size > settings.maxSize) {
-        Logger.log(`cant sell call ${symbol} as max size reached: ${size} > ${settings.maxSize}`);
+    if (settings.maxNotionalValue > 0 && notionalValue > settings.maxNotionalValue) {
+        Logger.log(`cant sell call ${symbol} as notionalValue: ${notionalValue} exceeded maxNotionalValue: ${settings.maxNotionalValue}`);
         return;
     }
     let qty = `${size}`;
 
-    let { retCode, retMsg } = await restClient.submitOrder({
-        symbol,
-        side: 'Sell',
-        orderType: 'Market',
-        timeInForce: 'GTC',
-        qty,
-        category: 'option'
-    });
+    // ({ retCode, retMsg } = await restClient.submitOrder({
+    //     symbol,
+    //     side: 'Sell',
+    //     orderType: 'Market',
+    //     timeInForce: 'GTC',
+    //     qty,
+    //     category: 'option'
+    // }));
 
     if (retCode === 0 && retMsg === 'OK') {
-        state.balance += size * income;
-        await Logger.log(`selling call option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.balance}`);
+        state.dailyBalance += size * income;
+        state.bounceCount++;
+        await Logger.log(`selling call option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.dailyBalance}`);
         state.options.push({
             symbol,
             size: size,
@@ -271,97 +295,93 @@ async function tradingStrategy(context: Context) {
 
     let nextExpiry = getNextExpiry();
     let nextTime = nextExpiry.getTime();
+
+    if (state.nextExpiry === undefined || nextTime !== state.nextExpiry.getTime()) {
+        state.nextExpiry = nextExpiry;
+        state.dailyBalance = 0;
+        state.options = state.options?.filter(o => o.expiry.getTime() >= nextTime) || [];
+        return;
+    }
+
+    let upperStrikePrice: number | undefined = undefined;
+    let lowerStrikePrice: number | undefined = undefined;
     let nextOptions = state.options?.filter(o => o.expiry.getTime() === nextTime) || [];
 
-    if (state.nextExpiry === undefined || nextExpiry.getTime() !== state.nextExpiry.getTime()) {
-        state.nextExpiry = nextExpiry;
-
-        state.options = state.options?.filter(o => o.expiry.getTime() >= nextTime) || [];
-        if (!nextOptions || nextOptions.length === 0) {
-            let midPrice = round(price / settings.stepSize, 0) * settings.stepSize;
-            let offset = settings.stepSize * settings.stepOffset;
-            state.upperStrikePrice = midPrice + offset;
-            state.lowerStrikePrice = midPrice - offset;
-            let halfProfit = settings.targetProfit / 2;
-
-            await sellCallOption({
-                strikePrice: state.upperStrikePrice,
-                targetProfit: halfProfit,
-                nextExpiry,
-                state,
-                settings,
-                restClient
-            });
-
-            await sellPutOption({
-                strikePrice: state.lowerStrikePrice,
-                targetProfit: halfProfit,
-                nextExpiry,
-                state,
-                settings,
-                restClient
-            });
-        }
-        else {
-            state.upperStrikePrice = 0;
-            state.lowerStrikePrice = 0;
-            for (let i = 0; i < nextOptions.length; i++) {
-                let option = nextOptions[i];
-                if (option.type === 'Call' && (state.upperStrikePrice === 0 || option.strikePrice < state.upperStrikePrice)) state.upperStrikePrice = option.strikePrice;
-                if (option.type === 'Put' && (state.lowerStrikePrice === 0 || option.strikePrice > state.lowerStrikePrice)) state.lowerStrikePrice = option.strikePrice;
-            }
-        }
-
-        return;
+    for (let i = 0; i < nextOptions.length; i++) {
+        let option = nextOptions[i];
+        if (option.type === 'Call' && (upperStrikePrice === undefined || option.strikePrice < upperStrikePrice)) upperStrikePrice = option.strikePrice;
+        if (option.type === 'Put' && (lowerStrikePrice === undefined || option.strikePrice > lowerStrikePrice)) lowerStrikePrice = option.strikePrice;
     }
 
-    if (bid < state.lowerStrikePrice) {
-        let nextLowerStrikePrice = state.lowerStrikePrice - (settings.stepSize * settings.stepOffset);
-        let putOptions = nextOptions.filter(o => o.type === 'Put' && o.strikePrice >= state.lowerStrikePrice);
+    let buyBackCallOptions = nextOptions.filter(o => upperStrikePrice !== undefined && o.type === 'Call' && o.strikePrice <= upperStrikePrice && ask > upperStrikePrice);
+    let buyBackPutOptions = nextOptions.filter(o => lowerStrikePrice !== undefined && o.type === 'Put' && o.strikePrice >= lowerStrikePrice && bid < lowerStrikePrice);
 
+    if (buyBackPutOptions.length > 0) {
         let cost = await buyBackOptions({
-            options: putOptions,
+            options: buyBackPutOptions,
             settings,
             state,
             restClient
         });
+        state.dailyBalance -= cost;
+        return;
+    }
+
+    if (buyBackCallOptions.length > 0) {
+        let cost = await buyBackOptions({
+            options: buyBackCallOptions,
+            settings,
+            state,
+            restClient
+        });
+        state.dailyBalance -= cost;
+        return;
+    }
+
+    let targetProfit = settings.targetProfit - state.dailyBalance;
+    if (targetProfit <= 0) return;
+
+    if (lowerStrikePrice === undefined && upperStrikePrice === undefined) {
+        let midPrice = round(price / settings.stepSize, 0) * settings.stepSize;
+        let offset = settings.stepSize * settings.stepOffset;
+
+        let priceIsBelowMid = price < midPrice;
+        if (state.bounceCount > settings.bounce) state.bounceCount = 0;
+
+        let shiftStrikePriceByOffset = state.bounceCount === 0;
+        if (priceIsBelowMid && shiftStrikePriceByOffset) lowerStrikePrice = midPrice - offset;
+        if (priceIsBelowMid && !shiftStrikePriceByOffset) upperStrikePrice = midPrice + offset;
+        if (!priceIsBelowMid && shiftStrikePriceByOffset) upperStrikePrice = midPrice + offset;
+        if (!priceIsBelowMid && !shiftStrikePriceByOffset) lowerStrikePrice = midPrice - offset;
+    }
+
+    if (upperStrikePrice !== undefined) {
+        await sellCallOption({
+            strikePrice: upperStrikePrice,
+            targetProfit,
+            nextExpiry,
+            state,
+            settings,
+            restClient
+        });
+        return;
+    }
+
+    if (lowerStrikePrice) {
 
         await sellPutOption({
-            strikePrice: nextLowerStrikePrice,
+            strikePrice: lowerStrikePrice,
+            targetProfit,
             nextExpiry,
-            targetProfit: cost,
-            settings,
             state,
+            settings,
             restClient
         });
-        state.lowerStrikePrice = nextLowerStrikePrice;
-
         return;
     }
+}
 
-    if (ask > state.upperStrikePrice) {
-        let nextUpperStrikePrice = state.upperStrikePrice + (settings.stepSize * settings.stepOffset);
-        let callOptions = nextOptions.filter(o => o.type === 'Call' && o.strikePrice <= state.upperStrikePrice);
-
-        let cost = await buyBackOptions({
-            options: callOptions,
-            settings,
-            state,
-            restClient
-        });
-
-        await sellCallOption({
-            strikePrice: nextUpperStrikePrice,
-            nextExpiry,
-            targetProfit: cost,
-            settings,
-            state,
-            restClient
-        });
-        state.upperStrikePrice = nextUpperStrikePrice;
-
-        return;
-    }
+if (state.bounceCount > 0 && state.bounceCount < settings.bounce && upperStrikePrice != undefined) {
 }
 
 dotenv.config({ override: true });
@@ -382,7 +402,7 @@ try {
     let state: State = {
         symbol: `${settings.base}${settings.quote}`,
         nextExpiry: undefined,
-        balance: 0,
+        dailyBalance: 0,
         options: [],
         bid: 0,
         ask: 0,
@@ -422,8 +442,14 @@ try {
     }
 
     while (true) {
-        await tradingStrategy(context);
-        await asyncSleep(10);
+        try {
+            await tradingStrategy(context);
+            await asyncSleep(1000);
+        }
+        catch (error) {
+            let err = error as Error;
+            await Logger.log(`error: message:${err.message} stack:${err.stack}`);
+        }
     }
 }
 catch (error) {
