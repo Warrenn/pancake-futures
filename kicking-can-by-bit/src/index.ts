@@ -13,6 +13,7 @@ precisionMap.set('ETHUSDT', { pricePrecision: 2, sizePrecision: 3 });
 precisionMap.set('ETHOPT', { pricePrecision: 2, sizePrecision: 1 });
 
 type OptionPositon = {
+    id: number
     symbol: string
     size: number
     expiry: Date
@@ -162,13 +163,14 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
             state.dailyBalance -= cost;
             totalCost += cost;
 
+            state.options = state.options.filter(o => o.id !== option.id);
             await Logger.log(`buying back option: ${option.symbol} ask:${askPrice} size:${option.size} strikePrice:${option.strikePrice} cost:${cost} balance:${state.dailyBalance}`);
         }
         else {
             await Logger.log(`error buying back option: ${option.symbol} retCode:${retCode} retMsg:${retMsg}`);
         }
     }
-    state.options = state.options.filter(o => !options.includes(o));
+
     return totalCost;
 }
 
@@ -208,6 +210,7 @@ async function sellPutOption({ strikePrice, nextExpiry, targetProfit, state, set
         state.bounceCount++;
         await Logger.log(`selling put option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.dailyBalance}`);
         state.options.push({
+            id: (new Date()).getTime(),
             symbol,
             size: size,
             strikePrice,
@@ -257,6 +260,7 @@ async function sellCallOption({ strikePrice, nextExpiry, targetProfit, settings,
         state.bounceCount++;
         await Logger.log(`selling call option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.dailyBalance}`);
         state.options.push({
+            id: (new Date()).getTime(),
             symbol,
             size: size,
             strikePrice,
@@ -295,6 +299,7 @@ async function getOptions({ restClient, settings }: { restClient: RestClientV5; 
         expiry.setUTCMonth(mIndex);
         expiry.setUTCFullYear(newYear);
         options.push({
+            id: (new Date()).getTime(),
             symbol: optionPosition.symbol,
             size: parseFloat(optionPosition.size),
             expiry,
