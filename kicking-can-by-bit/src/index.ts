@@ -186,7 +186,7 @@ async function sellPutOption({ strikePrice, nextExpiry, targetProfit, state, set
     //     category: 'option'
     // });
 
-    if (retCode === 0 && retMsg === 'OK') {
+    if (retCode === 0) {
         state.dailyBalance += size * income;
         state.bounceCount++;
         await Logger.log(`selling put option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.dailyBalance}`);
@@ -234,7 +234,7 @@ async function sellCallOption({ strikePrice, nextExpiry, targetProfit, settings,
     //     category: 'option'
     // }));
 
-    if (retCode === 0 && retMsg === 'OK') {
+    if (retCode === 0) {
         state.dailyBalance += size * income;
         state.bounceCount++;
         await Logger.log(`selling call option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.dailyBalance}`);
@@ -296,7 +296,7 @@ async function tradingStrategy(context: Context) {
     let nextExpiry = getNextExpiry();
     let nextTime = nextExpiry.getTime();
 
-    if (state.nextExpiry === undefined || nextTime !== state.nextExpiry.getTime()) {
+    if (nextTime !== state.nextExpiry.getTime()) {
         state.nextExpiry = nextExpiry;
         state.dailyBalance = 0;
         state.options = state.options?.filter(o => o.expiry.getTime() >= nextTime) || [];
