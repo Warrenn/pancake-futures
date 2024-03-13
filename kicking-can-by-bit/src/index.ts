@@ -124,25 +124,44 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
             continue;
         }
         let expiryString = getExpiryString(option.expiry.getTime());
-        let strikePrice = option.strikePrice - (settings.stepSize * settings.stepOffset);
-        let symbol = `${settings.base}-${expiryString}-${strikePrice}-P`;
-        ({ retCode, retMsg, result } = await restClient.getOrderbook({ symbol, category: 'option' }));
+
+        let putStrikePrice = option.strikePrice - (settings.stepSize * settings.stepOffset);
+        let putSymbol = `${settings.base}-${expiryString}-${putStrikePrice}-P`;
+        ({ retCode, retMsg, result } = await restClient.getOrderbook({ symbol: putSymbol, category: 'option' }));
         if (retCode !== 0 || !result || !result.b || result.b.length === 0 || !result.b[0]) {
-            await Logger.log(`cant buy back option:${option.symbol} as no counter order for:${symbol} retCode:${retCode} retMsg:${retMsg}`);
+            await Logger.log(`cant buy back option:${option.symbol} as no counter order for:${putSymbol} retCode:${retCode} retMsg:${retMsg}`);
             continue;
         }
-        strikePrice = option.strikePrice + (settings.stepSize * settings.stepOffset);
-        symbol = `${settings.base}-${expiryString}-${strikePrice}-C`;
-        ({ retCode, retMsg, result } = await restClient.getOrderbook({ symbol, category: 'option' }));
+        let putProfit = parseFloat(result.b[0][0]) - (option.strikePrice * commission);
+
+        let callStrikePrice = option.strikePrice + (settings.stepSize * settings.stepOffset);
+        let callSymbol = `${settings.base}-${expiryString}-${callStrikePrice}-C`;
+        ({ retCode, retMsg, result } = await restClient.getOrderbook({ symbol: callSymbol, category: 'option' }));
         if (retCode !== 0 || !result || !result.b || result.b.length === 0 || !result.b[0]) {
-            await Logger.log(`cant buy back option:${option.symbol} as no counter order for:${symbol} retCode:${retCode} retMsg:${retMsg}`);
+            await Logger.log(`cant buy back option:${option.symbol} as no counter order for:${callSymbol} retCode:${retCode} retMsg:${retMsg}`);
             continue;
         }
+        let callProfit = parseFloat(result.b[0][0]) - (option.strikePrice * commission);
 
         let askPrice = parseFloat(result.a[0][0]);
         let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
         let qty = `${round(option.size, sizePrecision)}`;
         let cost = (askPrice * option.size) + (option.strikePrice * option.size * commission);
+        let targetProfit = settings.targetProfit + (state.dailyBalance - cost);
+
+        let putSize = round(targetProfit / putProfit, sizePrecision);
+        let putNotionalValue = putSize * putStrikePrice;
+        if (putSize > 0 && putNotionalValue > settings.maxNotionalValue) {
+            Logger.log(`cant buy back option ${option.symbol} as notionalValue: ${putNotionalValue} exceeded maxNotionalValue: ${settings.maxNotionalValue} for put option: ${putSymbol}`);
+            continue;
+        }
+
+        let callSize = round(targetProfit / callProfit, sizePrecision);
+        let callNotionalValue = callSize * callStrikePrice;
+        if (callSize > 0 && callNotionalValue > settings.maxNotionalValue) {
+            Logger.log(`cant buy back option ${option.symbol} as notionalValue: ${callNotionalValue} exceeded maxNotionalValue: ${settings.maxNotionalValue} for call option: ${callSymbol}`);
+            continue;
+        }
 
         if (settings.maxLoss > 0 && cost > settings.maxLoss) {
             Logger.log(`cant buy back option ${option.symbol} as cost: ${cost} exceeded maxLoss: ${settings.maxLoss}`);
