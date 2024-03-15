@@ -1,0 +1,26 @@
+get the next possible trade strike price and type(call/put) works with bounce and shift
+loop through all option positions:
+    get the orders for option position
+    if position Out of money cancel all position orders
+    if position In money and there are orders
+        check that the order is still the best bid price if not update
+    if position In money and there are no orders
+        confirm the buy price using order book
+        get the buy cost and effect on daily balance to calculate required counter sell value
+        using the orderbook for the next possible trade get the required sell size
+        if next trade has no bid price cant buy current position
+        if the notional value of the counter trade larger than max notional value cant buy current position
+        if the resulting daily balance larger than max expense cant buy current position
+        if everything checks out use the bestbid price to place a limit buy reduce only order
+calculate the difference between targetProfit and dailybalance
+if there is no need to sell continue with loop
+if there is still a need to sell
+get the current sell orders
+calculate the estimated profits from orders
+if there is no need continue with loop
+
+if there is still a need to sell
+calculate the required profit
+get the size using orderbook using the data earlier ie stikeprice and type
+if notional value larger than max notional value continue with loop
+place limit sell order at size and price from orderbook using from the data earlier ie stikeprice and type

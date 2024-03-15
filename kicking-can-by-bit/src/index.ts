@@ -1,5 +1,5 @@
 import { setTimeout as asyncSleep } from 'timers/promises';
-import { RestClientV5, WebsocketClient } from 'bybit-api'
+import { AccountTypeV5, RestClientV5, WebsocketClient } from 'bybit-api'
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import dotenv from 'dotenv';
 import { round } from './calculations.js';
@@ -13,7 +13,6 @@ precisionMap.set('ETHUSDT', { pricePrecision: 2, sizePrecision: 3 });
 precisionMap.set('ETHOPT', { pricePrecision: 2, sizePrecision: 1 });
 
 type OptionPositon = {
-    id: number
     symbol: string
     size: number
     expiry: Date
@@ -22,13 +21,34 @@ type OptionPositon = {
     type: 'Put' | 'Call'
 }
 
+type OrderBook = {
+    symbol: string
+    bid?: number
+    ask?: number
+    price?: number
+}
+
+type Order = {
+    id: string
+    symbol: string
+    size: number
+    side: 'Buy' | 'Sell'
+    price: number
+    reduceOnly: boolean
+    fee: number
+}
+
 type State = {
     bid: number
     ask: number
     price: number
     symbol: string
     nextExpiry: Date
-    options: OptionPositon[]
+    nextSellSymbol: string
+    nextSymbolMap: Map<string, string>
+    options: Map<string, OptionPositon>
+    orders: Map<string, Order>
+    orderBooks: Map<string, OrderBook>
     dailyBalance: number
     bounceCount: number
 }
@@ -44,6 +64,7 @@ type Credentials = {
 }
 
 type Settings = {
+    accountType?: AccountTypeV5
     stepSize: number
     stepOffset: number
     bounce: number
@@ -58,17 +79,131 @@ type Context = {
     state: State
     settings: Settings
     restClient: RestClientV5
+    socketClient: WebsocketClient
+}
+
+function getNextSellSymbol({ currentSymbol, state, settings }: { currentSymbol: string, state: State, settings: Settings }): string | undefined {
+    let offset = settings.stepSize * settings.stepOffset;
+    let details = getSymbolDetails(currentSymbol);
+    if (!details) return undefined;
+    state.bounceCount = (state.bounceCount + 1) % settings.bounce;
+
+    let { base, expiry, strikePrice, type } = details;
+    let expiryString = getExpiryString(expiry.getTime());
+    let shiftStrikePriceByOffset = state.bounceCount === 0;
+
+    if (type === 'Call' && shiftStrikePriceByOffset) return `${base}-${expiryString}-${strikePrice + offset}-C`;
+    if (type === 'Call' && !shiftStrikePriceByOffset) return `${base}-${expiryString}-${strikePrice - offset}-P`;
+    if (type === 'Put' && shiftStrikePriceByOffset) return `${base}-${expiryString}-${strikePrice - offset}-P`;
+    if (type === 'Put' && !shiftStrikePriceByOffset) return `${base}-${expiryString}-${strikePrice + offset}-C`;
+}
+
+async function getFirstSellSymbol({ symbol, expiry, restClient, settings }: { symbol: string, expiry: Date, restClient: RestClientV5, settings: Settings }): Promise<string> {
+    let { retCode, retMsg, result } = await restClient.getOrderbook({ symbol, category: 'linear' });
+    if (retCode !== 0 || !result || !result.b || result.b.length === 0 || !result.b[0] || !result.a || result.a.length === 0 || !result.a[0]) {
+        throw `error getting orderbook for:${symbol} retCode:${retCode} retMsg:${retMsg}`;
+    }
+
+    let price = (parseFloat(result.b[0][0]) + parseFloat(result.a[0][0])) / 2;
+    let strikePrice = round(price / settings.stepSize, 0) * settings.stepSize;
+    let offset = settings.stepSize * settings.stepOffset;
+    let priceIsBelowStrike = price < strikePrice;
+    let expiryString = getExpiryString(expiry.getTime());
+
+    if (priceIsBelowStrike) return `${settings.base}-${expiryString}-${strikePrice + offset}-C`;
+    return `${settings.base}-${expiryString}-${strikePrice - offset}-P`;
 }
 
 function orderbookUpdate(data: any, state: State) {
     if (!data || !data.data || !data.data.b || !data.data.a) return;
     let topicParts = data.topic.split('.');
     if (!topicParts || topicParts.length !== 3) return;
-    if (topicParts[2] !== state.symbol) return;
-    if (data.data.b.length > 0 && data.data.b[0].length > 0) state.bid = parseFloat(data.data.b[0][0]);
-    if (data.data.a.length > 0 && data.data.a[0].length > 0) state.ask = parseFloat(data.data.a[0][0]);
     let precision = precisionMap.get(state.symbol)?.pricePrecision || 2;
-    state.price = round((state.bid + state.ask) / 2, precision);
+    let ob = data.data;
+    let symbol = topicParts[2];
+    if (symbol === state.symbol) {
+        if (ob.b.length > 0 && ob.b[0].length > 0) state.bid = parseFloat(ob.b[0][0]);
+        if (ob.a.length > 0 && ob.a[0].length > 0) state.ask = parseFloat(ob.a[0][0]);
+
+        state.price = round((state.bid + state.ask) / 2, precision);
+        return;
+    }
+    let optionOb: OrderBook = {
+        symbol,
+        ask: (ob.a.length > 0 && ob.a[0].length > 0) ? parseFloat(ob.a[0][0]) : undefined,
+        bid: (ob.b.length > 0 && ob.b[0].length > 0) ? parseFloat(ob.b[0][0]) : undefined
+    }
+    if (optionOb.ask !== undefined && optionOb.bid !== undefined) optionOb.price = round((optionOb.bid + optionOb.ask) / 2, precision);
+    state.orderBooks.set(symbol, optionOb);
+}
+
+function orderUpdate(data: any, state: State) {
+    if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
+    let orderData = data.data[0];
+    if (orderData.stopOrderType !== '') return;
+    if (orderData.category !== 'option') return;
+
+    let symbol = orderData.symbol;
+    let details = getSymbolDetails(symbol);
+    if (!details) return;
+
+    let strikePrice = details.strikePrice;
+    let side = orderData.side;
+    let size = parseFloat(orderData.qty);
+    let price = parseFloat(orderData.price);
+    let value = size * price;
+    let fee = strikePrice * commission * size;
+
+    let orderId = orderData.orderId;
+    let orderStatus = orderData.orderStatus;
+    let reduceOnly = orderData.reduceOnly;
+
+    switch (orderStatus) {
+        case 'Cancelled':
+        case 'Rejected':
+        case 'Deactivated':
+            state.orders.delete(orderId);
+            break;
+        case 'Filled':
+            if (side === 'Buy') state.dailyBalance -= value + fee;
+            if (side === 'Sell') state.dailyBalance += value - fee;
+            state.orders.delete(orderId);
+            break;
+        case 'New':
+            let order: Order = {
+                id: orderId,
+                symbol,
+                size,
+                side,
+                fee,
+                price,
+                reduceOnly
+            }
+            state.orders.set(orderId, order);
+            break;
+    }
+}
+
+function positionUpdate(data: any, state: State) {
+    if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
+
+    let positionData = data.data[0];
+    let size = Math.abs(parseFloat(positionData.size));
+    let entryPrice = parseFloat(positionData.entryPrice);
+    let symbol = positionData.symbol;
+    let details = getSymbolDetails(symbol);
+
+    if (!details) return;
+    let { expiry, strikePrice, type } = details;
+    let position: OptionPositon = {
+        symbol,
+        size,
+        expiry,
+        strikePrice,
+        entryPrice,
+        type
+    }
+    state.options.set(symbol, position);
 }
 
 function websocketCallback(state: State): (response: any) => void {
@@ -79,6 +214,12 @@ function websocketCallback(state: State): (response: any) => void {
         switch (topic[0]) {
             case 'orderbook':
                 orderbookUpdate(data, state);
+                break;
+            case 'position':
+                positionUpdate(data, state);
+                break;
+            case 'order':
+                orderUpdate(data, state);
                 break;
         }
     }
@@ -168,6 +309,10 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
             continue;
         }
 
+        //no bid or ask in orderbook
+        //update of an order
+
+
         // ({ retCode, retMsg } = await restClient.submitOrder({
         //     symbol: option.symbol,
         //     side: 'Buy',
@@ -178,11 +323,11 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
         //     reduceOnly: true
         // }));
 
-        if (retCode === 0 && retMsg === 'OK') {
+        if (retCode === 0) {
             state.dailyBalance -= cost;
             totalCost += cost;
 
-            state.options = state.options.filter(o => o.id !== option.id);
+            //state.options = state.options.filter(o => o.id !== option.id);
             await Logger.log(`buying back option: ${option.symbol} ask:${askPrice} size:${option.size} strikePrice:${option.strikePrice} cost:${cost} balance:${state.dailyBalance}`);
         }
         else {
@@ -228,15 +373,15 @@ async function sellPutOption({ strikePrice, nextExpiry, targetProfit, state, set
         state.dailyBalance += size * income;
         state.bounceCount++;
         await Logger.log(`selling put option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.dailyBalance}`);
-        state.options.push({
-            id: (new Date()).getTime(),
-            symbol,
-            size: size,
-            strikePrice,
-            expiry: nextExpiry,
-            entryPrice: bidPrice,
-            type: 'Put'
-        });
+        // state.options.push({
+        //     id: (new Date()).getTime(),
+        //     symbol,
+        //     size: size,
+        //     strikePrice,
+        //     expiry: nextExpiry,
+        //     entryPrice: bidPrice,
+        //     type: 'Put'
+        // });
     }
     else {
         await Logger.log(`error selling put option: ${symbol} retCode:${retCode} retMsg:${retMsg}`);
@@ -278,54 +423,66 @@ async function sellCallOption({ strikePrice, nextExpiry, targetProfit, settings,
         state.dailyBalance += size * income;
         state.bounceCount++;
         await Logger.log(`selling call option: ${symbol} bid:${bidPrice} income:${income} targetProfit:${targetProfit} size:${size} strikePrice:${strikePrice} balance:${state.dailyBalance}`);
-        state.options.push({
-            id: (new Date()).getTime(),
-            symbol,
-            size: size,
-            strikePrice,
-            expiry: nextExpiry,
-            entryPrice: bidPrice,
-            type: 'Call'
-        });
+        // state.options.push({
+        //     id: (new Date()).getTime(),
+        //     symbol,
+        //     size: size,
+        //     strikePrice,
+        //     expiry: nextExpiry,
+        //     entryPrice: bidPrice,
+        //     type: 'Call'
+        // });
     } else {
         await Logger.log(`error selling call option: ${symbol} retCode:${retCode} retMsg:${retMsg}`);
     }
 }
 
-async function getOptions({ restClient, settings }: { restClient: RestClientV5; settings: Settings }): Promise<OptionPositon[]> {
+function getSymbolDetails(symbol: string): { base: string, expiry: Date; strikePrice: number; type: 'Put' | 'Call' } | undefined {
+    let checkExpression = new RegExp(`^(\\w+)-(\\d+)(\\w{3})(\\d{2})-(\\d*)-(P|C)$`);
+    let matches = symbol.match(checkExpression);
+    if (!matches) return undefined;
+
+    let base = matches[1];
+    let strikePrice = parseFloat(matches[5]);
+    let type: 'Put' | 'Call' = matches[6] === 'P' ? 'Put' : 'Call';
+    let mIndex = months.indexOf(matches[3]);
+    let expiry = new Date();
+    let newYear = parseInt(`20${matches[4]}`);
+    expiry.setUTCDate(parseInt(matches[2]));
+    expiry.setUTCHours(8);
+    expiry.setUTCMinutes(0);
+    expiry.setUTCSeconds(0);
+    expiry.setUTCMilliseconds(0);
+    expiry.setUTCMonth(mIndex);
+    expiry.setUTCFullYear(newYear);
+
+    return { base, strikePrice, expiry, type };
+}
+
+async function getOptions({ restClient, settings }: { restClient: RestClientV5; settings: Settings }): Promise<Map<string, OptionPositon>> {
     let
         baseCurrency = settings.base,
         { result: { list } } = await restClient.getPositionInfo({ category: "option", baseCoin: baseCurrency }),
-        checkExpression = new RegExp(`^${baseCurrency}-(\\d+)(\\w{3})(\\d{2})-(\\d*)-(P|C)$`),
-        options: OptionPositon[] = []
+        options = new Map<string, OptionPositon>();
 
     for (let c = 0; c < (list || []).length; c++) {
         let optionPosition = list[c];
-        let matches = optionPosition.symbol.match(checkExpression);
+        let symbol = optionPosition.symbol;
+        let details = getSymbolDetails(symbol);
+        if (!details) continue;
 
-        if (!matches) continue;
-        if (parseFloat(optionPosition.size) == 0) continue;
-        let strikePrice = parseFloat(matches[4]);
-        let type: 'Put' | 'Call' = matches[5] === 'P' ? 'Put' : 'Call';
-        let mIndex = months.indexOf(matches[2]);
-        let expiry = new Date();
-        let newYear = parseInt(`20${matches[3]}`);
-        expiry.setUTCDate(parseInt(matches[1]));
-        expiry.setUTCHours(8);
-        expiry.setUTCMinutes(0);
-        expiry.setUTCSeconds(0);
-        expiry.setUTCMilliseconds(0);
-        expiry.setUTCMonth(mIndex);
-        expiry.setUTCFullYear(newYear);
-        options.push({
-            id: (new Date()).getTime(),
-            symbol: optionPosition.symbol,
+        let { base, expiry, strikePrice, type } = details;
+        if (base !== settings.base) continue;
+
+        let position = {
+            symbol,
             size: parseFloat(optionPosition.size),
             expiry,
             strikePrice,
             entryPrice: parseFloat(optionPosition.avgPrice),
             type
-        });
+        };
+        options.set(symbol, position);
     }
 
     return options;
@@ -341,13 +498,13 @@ async function tradingStrategy(context: Context) {
     if (nextTime !== state.nextExpiry.getTime()) {
         state.nextExpiry = nextExpiry;
         state.dailyBalance = 0;
-        state.options = state.options?.filter(o => o.expiry.getTime() >= nextTime) || [];
+        // state.options = state.options?.filter(o => o.expiry.getTime() >= nextTime) || [];
         return;
     }
 
     let upperStrikePrice: number | undefined = undefined;
     let lowerStrikePrice: number | undefined = undefined;
-    let nextOptions = state.options?.filter(o => o.expiry.getTime() === nextTime) || [];
+    let nextOptions = [...state.options.values()];//?.filter(o => o.expiry.getTime() === nextTime) || [];
 
     for (let i = 0; i < nextOptions.length; i++) {
         let option = nextOptions[i];
@@ -422,6 +579,117 @@ async function tradingStrategy(context: Context) {
     }
 }
 
+function getOrderBookSymbols({ positions, settings, state }: { positions: OptionPositon[]; settings: Settings; state: State }): string[] {
+    let symbols: string[] = [];
+
+    for (let i = 0; i < positions.length; i++) {
+        let position = positions[i];
+
+        symbols.push(position.symbol);
+
+        let nextSellSymbol = getNextSellSymbol({ currentSymbol: position.symbol, state, settings });
+        if (nextSellSymbol === undefined) continue;
+
+        state.nextSymbolMap.set(position.symbol, nextSellSymbol);
+        symbols.push(nextSellSymbol);
+    }
+
+    return symbols;
+}
+
+async function subscribeToOrderBookOptions({ optionSymbols, socketClient }: { optionSymbols: string[]; socketClient: WebsocketClient; }) {
+    for (let i = 0; i < optionSymbols.length; i++) {
+        let symbol = optionSymbols[i];
+        await socketClient.subscribeV5(`orderbook.25.${symbol}`, 'option');
+    }
+}
+
+async function getOrders({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<Map<string, Order>> {
+    let orders: Map<string, Order> = new Map();
+    let cursor: string | undefined = undefined;
+
+    while (true) {
+        let { retCode, retMsg, result: { list, nextPageCursor } } = await restClient.getActiveOrders({
+            baseCoin: settings.base,
+            category: 'option',
+            cursor
+        });
+
+        if (retCode !== 0) {
+            Logger.log(`getting the orders failed for ${settings.base} ${retMsg}`);
+            return orders;
+        }
+
+        for (let i = 0; i < list.length; i++) {
+            let order = list[i];
+            if (['New', 'Created', 'Active'].indexOf(order.orderStatus) === -1) continue;
+
+            let qty = parseFloat(order.qty);
+            let price = parseFloat(order.price);
+            let details = getSymbolDetails(order.symbol);
+            if (!details) continue;
+
+            let strikePrice = details.strikePrice;
+            let fee = strikePrice * commission * qty;
+
+            orders.set(order.orderId, {
+                id: order.orderId,
+                symbol: order.symbol,
+                size: qty,
+                side: order.side,
+                price,
+                reduceOnly: order.reduceOnly,
+                fee
+            });
+        }
+
+        if (!(nextPageCursor as string)) break;
+        cursor = nextPageCursor as string;
+    }
+    return orders;
+}
+
+async function getRunningBalance({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<number> {
+    let balance = 0;
+    let nextExpiry = getNextExpiry();
+    let startTime = nextExpiry.getTime() - (24 * 60 * 60 * 1000);//1 day
+    let endTime = (new Date()).getTime();
+    let accountType = settings.accountType || 'UNIFIED';
+    let cursor: string | undefined = undefined;
+
+    while (true) {
+        let { retCode, result: { list, nextPageCursor }, retMsg } = await restClient.getTransactionLog({
+            accountType,
+            baseCoin: settings.base,
+            category: 'option',
+            startTime,
+            endTime,
+            cursor
+        })
+
+        if (retCode !== 0) {
+            Logger.log(`getting the transactions failed for ${settings.base} accountType: ${accountType} ${retMsg} setting default balance: 0`);
+            return 0;
+        }
+
+        for (let i = 0; i < list.length; i++) {
+            let transactionLog = list[i];
+            if (transactionLog.type !== 'TRADE') continue;
+
+            let qty = parseFloat(transactionLog.qty);
+            let price = parseFloat(transactionLog.tradePrice);
+            let fee = parseFloat(transactionLog.fee);
+            let tradeValue = qty * price;
+            if (transactionLog.side === 'Sell') balance += tradeValue - fee;
+            if (transactionLog.side === 'Buy') balance -= tradeValue + fee;
+        }
+
+        if (!(nextPageCursor as string)) break;
+        cursor = nextPageCursor as string;
+    }
+    return balance;
+}
+
 dotenv.config({ override: true });
 
 await Logger.logVersion();
@@ -451,20 +719,36 @@ try {
     });
 
     let options = await getOptions({ settings, restClient });
+    let nextExpiry = getNextExpiry();
+    let dailyBalance = await getRunningBalance({ restClient, settings });
+    let symbol = `${settings.base}${settings.quote}`;
+    let nextSellSymbol = await getFirstSellSymbol({ symbol, expiry: nextExpiry, restClient, settings });
+    let orders = await getOrders({ restClient, settings });
+
     let state: State = {
-        symbol: `${settings.base}${settings.quote}`,
-        nextExpiry: getNextExpiry(),
-        dailyBalance: 0,
+        symbol,
+        nextExpiry,
+        dailyBalance,
+        nextSellSymbol,
+        nextSymbolMap: new Map<string, string>(),
         options,
         bid: 0,
         ask: 0,
         price: 0,
-        bounceCount: 0
+        bounceCount: 0,
+        orders,
+        orderBooks: new Map<string, OrderBook>()
     } as State;
 
     socketClient.on('update', websocketCallback(state));
 
     await socketClient.subscribeV5(`orderbook.1.${state.symbol}`, 'linear');
+    await socketClient.subscribeV5('order', 'option');
+    await socketClient.subscribeV5('position', 'option');
+
+    let optionSymbols = getOrderBookSymbols({ positions: [...options.values()], settings, state });
+    optionSymbols.push(nextSellSymbol);
+    await subscribeToOrderBookOptions({ optionSymbols, socketClient });
 
     await Logger.log(`state: ${JSON.stringify(state)}`);
     await Logger.log(`settings: ${JSON.stringify(settings)}`);
@@ -472,12 +756,13 @@ try {
     let context: Context = {
         state,
         settings,
-        restClient
+        restClient,
+        socketClient
     }
 
     while (true) {
         try {
-            await tradingStrategy(context);
+            // await tradingStrategy(context);
             await asyncSleep(1000);
         }
         catch (error) {
@@ -491,5 +776,6 @@ catch (error) {
     await Logger.log(`error: message:${err.message} stack:${err.stack}`);
     process.exit(1);
 }
+
 
 
