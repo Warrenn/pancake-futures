@@ -4,6 +4,7 @@ import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import dotenv from 'dotenv';
 import { round } from './calculations.js';
 import { Logger } from './logger.js';
+import { get } from 'http';
 
 const commission = 0.0002;
 const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -256,86 +257,105 @@ function getNextExpiry() {
     return expiryDate;
 }
 
-async function buyBackOptions({ options, state, settings, restClient }: { options: OptionPositon[]; state: State; settings: Settings; restClient: RestClientV5; }): Promise<number> {
-    let totalCost = 0;
+async function buyBackOptions({ options, state, settings, restClient, socketClient }: { options: OptionPositon[]; state: State; settings: Settings; restClient: RestClientV5; socketClient: WebsocketClient }): Promise<void> {
+    let pricePrecision = precisionMap.get(`${settings.base}OPT`)?.pricePrecision || 2;
+    let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
+    let smallestPriceValue = Number(`1e-${pricePrecision}`);
+
     for (let option of options) {
-        let { retCode, retMsg, result } = await restClient.getOrderbook({ symbol: option.symbol, category: 'option' });
-        if (retCode !== 0 || !result || !result.a || result.a.length === 0 || !result.a[0]) {
-            await Logger.log(`error getting orderbook for option: ${option.symbol} retCode:${retCode} retMsg:${retMsg}`);
+        let size = option.size;
+        if (size <= 0) continue;
+
+        let symbol = option.symbol;
+        let strikePrice = option.strikePrice;
+        let orders = [...state.orders.values()].filter(o => o.symbol === symbol);
+        let positionITM = option.type === 'Call' ? state.ask >= strikePrice : state.bid <= strikePrice;
+
+        if (!positionITM && orders.length === 0) continue;
+        if (!positionITM && orders.length > 0) {
+            for (let i = 0; i < orders.length; i++) {
+                let order = orders[i];
+                let { retCode, retMsg } = await restClient.cancelOrder({ orderId: order.id, symbol: order.symbol, category: 'option' });
+                if (retCode === 0) continue;
+                await Logger.log(`error cancelling order: ${order.id} ${order.symbol} retCode:${retCode} retMsg:${retMsg}`);
+            }
             continue;
         }
-        let expiryString = getExpiryString(option.expiry.getTime());
 
-        let putStrikePrice = option.strikePrice - (settings.stepSize * settings.stepOffset);
-        let putSymbol = `${settings.base}-${expiryString}-${putStrikePrice}-P`;
-        ({ retCode, retMsg, result } = await restClient.getOrderbook({ symbol: putSymbol, category: 'option' }));
-        if (retCode !== 0 || !result || !result.b || result.b.length === 0 || !result.b[0]) {
-            await Logger.log(`cant buy back option:${option.symbol} as no counter order for:${putSymbol} retCode:${retCode} retMsg:${retMsg}`);
+        let buyBackBid = state.orderBooks.get(symbol)?.bid;
+        let buyBackAsk = state.orderBooks.get(symbol)?.ask;
+
+        if (buyBackAsk === undefined) {
+            await Logger.log(`cant buy back: ${symbol} as no ask price in orderbook`);
             continue;
         }
-        let putProfit = parseFloat(result.b[0][0]) - (option.strikePrice * commission);
+        let adjustedBuyBackPrice = (buyBackBid === undefined)
+            ? round(buyBackAsk - smallestPriceValue, pricePrecision)
+            : round(buyBackBid + smallestPriceValue, pricePrecision);
 
-        let callStrikePrice = option.strikePrice + (settings.stepSize * settings.stepOffset);
-        let callSymbol = `${settings.base}-${expiryString}-${callStrikePrice}-C`;
-        ({ retCode, retMsg, result } = await restClient.getOrderbook({ symbol: callSymbol, category: 'option' }));
-        if (retCode !== 0 || !result || !result.b || result.b.length === 0 || !result.b[0]) {
-            await Logger.log(`cant buy back option:${option.symbol} as no counter order for:${callSymbol} retCode:${retCode} retMsg:${retMsg}`);
+        if (positionITM && orders.length > 0) {
+            for (let i = 0; i < orders.length; i++) {
+                let order = orders[i];
+                if (order.price === buyBackBid) continue;
+
+                let { retCode, retMsg } = await restClient.amendOrder({
+                    orderId: order.id,
+                    price: `${adjustedBuyBackPrice}`,
+                    symbol: order.symbol,
+                    category: 'option'
+                });
+                if (retCode === 0) continue;
+
+                await Logger.log(`error amending order: ${order.id} ${order.symbol} price:${adjustedBuyBackPrice} retCode:${retCode} retMsg:${retMsg}`);
+            }
             continue;
         }
-        let callProfit = parseFloat(result.b[0][0]) - (option.strikePrice * commission);
 
-        let askPrice = parseFloat(result.a[0][0]);
-        let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
+        let counterSymbol = state.nextSymbolMap.get(symbol);
+        if (counterSymbol === undefined) {
+            counterSymbol = getNextSellSymbol({ currentSymbol: symbol, state, settings });
+            if (counterSymbol === undefined) {
+                await Logger.log(`cant buy back: ${symbol} as there is no nextSymbol`);
+                continue;
+            }
+            state.nextSymbolMap.set(symbol, counterSymbol);
+            subscribeToOrderBookOptions({ optionSymbols: [counterSymbol], socketClient });
+            continue;
+        }
+
+        let counterBid = state.orderBooks.get(counterSymbol)?.bid;
+        if (counterBid === undefined) {
+            await Logger.log(`cant buy back: ${symbol} as there is no counter order for ${counterSymbol} in orderbook`);
+            continue;
+        }
+
+        let buyBackCost = (adjustedBuyBackPrice * size) + (strikePrice * size * commission);
+        let targetProfit = settings.targetProfit - (state.dailyBalance - buyBackCost);
+        let counterProfit = counterBid - (option.strikePrice * commission);
+        let { strikePrice: counterStrikePrice } = (getSymbolDetails(counterSymbol) || { strikePrice });
+        let counterSize = round(targetProfit / counterProfit, sizePrecision);
+        let counterNotionalValue = counterSize * counterStrikePrice;
+
+        if (counterNotionalValue > settings.maxNotionalValue) {
+            Logger.log(`cant buy back option ${symbol} as notionalValue: ${counterNotionalValue} exceeds maxNotionalValue: ${settings.maxNotionalValue} for option: ${counterSymbol}`);
+            continue;
+        }
+
         let qty = `${round(option.size, sizePrecision)}`;
-        let cost = (askPrice * option.size) + (option.strikePrice * option.size * commission);
-        let targetProfit = settings.targetProfit + (state.dailyBalance - cost);
+        let { retCode, retMsg } = await restClient.submitOrder({
+            symbol,
+            side: 'Buy',
+            orderType: 'Limit',
+            timeInForce: 'GTC',
+            qty,
+            price: `${adjustedBuyBackPrice}`,
+            category: 'option',
+            reduceOnly: true
+        });
 
-        let putSize = round(targetProfit / putProfit, sizePrecision);
-        let putNotionalValue = putSize * putStrikePrice;
-        if (putSize > 0 && putNotionalValue > settings.maxNotionalValue) {
-            Logger.log(`cant buy back option ${option.symbol} as notionalValue: ${putNotionalValue} exceeded maxNotionalValue: ${settings.maxNotionalValue} for put option: ${putSymbol}`);
-            continue;
-        }
-
-        let callSize = round(targetProfit / callProfit, sizePrecision);
-        let callNotionalValue = callSize * callStrikePrice;
-        if (callSize > 0 && callNotionalValue > settings.maxNotionalValue) {
-            Logger.log(`cant buy back option ${option.symbol} as notionalValue: ${callNotionalValue} exceeded maxNotionalValue: ${settings.maxNotionalValue} for call option: ${callSymbol}`);
-            continue;
-        }
-
-        if (settings.maxLoss > 0 && cost > settings.maxLoss) {
-            Logger.log(`cant buy back option ${option.symbol} as cost: ${cost} exceeded maxLoss: ${settings.maxLoss}`);
-            continue;
-        }
-
-        //no bid or ask in orderbook
-        //update of an order
-
-
-        // ({ retCode, retMsg } = await restClient.submitOrder({
-        //     symbol: option.symbol,
-        //     side: 'Buy',
-        //     orderType: 'Market',
-        //     timeInForce: 'GTC',
-        //     qty,
-        //     category: 'option',
-        //     reduceOnly: true
-        // }));
-
-        if (retCode === 0) {
-            state.dailyBalance -= cost;
-            totalCost += cost;
-
-            //state.options = state.options.filter(o => o.id !== option.id);
-            await Logger.log(`buying back option: ${option.symbol} ask:${askPrice} size:${option.size} strikePrice:${option.strikePrice} cost:${cost} balance:${state.dailyBalance}`);
-        }
-        else {
-            await Logger.log(`error buying back option: ${option.symbol} retCode:${retCode} retMsg:${retMsg}`);
-        }
+        if (retCode === 0) continue;
+        await Logger.log(`error buying back option: ${symbol} qty:${qty} price:${adjustedBuyBackPrice} retCode:${retCode} retMsg:${retMsg}`);
     }
-
-    return totalCost;
 }
 
 async function sellPutOption({ strikePrice, nextExpiry, targetProfit, state, settings, restClient }: { strikePrice: number; nextExpiry: Date, targetProfit: number, settings: Settings, state: State; restClient: RestClientV5; }): Promise<void> {
@@ -498,13 +518,13 @@ async function tradingStrategy(context: Context) {
     if (nextTime !== state.nextExpiry.getTime()) {
         state.nextExpiry = nextExpiry;
         state.dailyBalance = 0;
-        // state.options = state.options?.filter(o => o.expiry.getTime() >= nextTime) || [];
+        [...state.options.keys()].forEach(k => (state.options.get(k) || { expiry: new Date(nextTime) })?.expiry.getTime() < nextTime && state.options.delete(k));
         return;
     }
 
     let upperStrikePrice: number | undefined = undefined;
     let lowerStrikePrice: number | undefined = undefined;
-    let nextOptions = [...state.options.values()];//?.filter(o => o.expiry.getTime() === nextTime) || [];
+    let nextOptions = [...state.options.values()].filter(o => o.expiry.getTime() === nextTime);
 
     for (let i = 0; i < nextOptions.length; i++) {
         let option = nextOptions[i];
@@ -762,7 +782,7 @@ try {
 
     while (true) {
         try {
-            // await tradingStrategy(context);
+            await tradingStrategy(context);
             await asyncSleep(1000);
         }
         catch (error) {
