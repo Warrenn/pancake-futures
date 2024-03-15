@@ -330,7 +330,14 @@ async function buyBackOptions({ options, state, settings, restClient, socketClie
         }
 
         let buyBackCost = (adjustedBuyBackPrice * size) + (strikePrice * size * commission);
-        let targetProfit = settings.targetProfit - (state.dailyBalance - buyBackCost);
+        let resultBalance = state.dailyBalance - buyBackCost;
+
+        if (settings.maxLoss > 0 && resultBalance < settings.maxLoss) {
+            Logger.log(`cant buy back option ${symbol} as resultBalance: ${resultBalance} is less than maxLoss: ${settings.maxLoss}`);
+            continue;
+        }
+
+        let targetProfit = settings.targetProfit - resultBalance;
         let counterProfit = counterBid - (option.strikePrice * commission);
         let { strikePrice: counterStrikePrice } = (getSymbolDetails(counterSymbol) || { strikePrice });
         let counterSize = round(targetProfit / counterProfit, sizePrecision);
@@ -513,7 +520,7 @@ async function getOptions({ restClient, settings }: { restClient: RestClientV5; 
 }
 
 async function tradingStrategy(context: Context) {
-    let { state, settings, restClient } = context;
+    let { state, settings, restClient, socketClient } = context;
     let { bid, ask, price } = state;
 
     let nextExpiry = getNextExpiry();
@@ -526,43 +533,21 @@ async function tradingStrategy(context: Context) {
         return;
     }
 
-    let upperStrikePrice: number | undefined = undefined;
-    let lowerStrikePrice: number | undefined = undefined;
-    let nextOptions = [...state.options.values()].filter(o => o.expiry.getTime() === nextTime);
-
-    for (let i = 0; i < nextOptions.length; i++) {
-        let option = nextOptions[i];
-        if (option.type === 'Call' && (upperStrikePrice === undefined || option.strikePrice < upperStrikePrice)) upperStrikePrice = option.strikePrice;
-        if (option.type === 'Put' && (lowerStrikePrice === undefined || option.strikePrice > lowerStrikePrice)) lowerStrikePrice = option.strikePrice;
-    }
-
-    let buyBackCallOptions = nextOptions.filter(o => upperStrikePrice !== undefined && o.type === 'Call' && o.strikePrice <= upperStrikePrice && ask > upperStrikePrice);
-    let buyBackPutOptions = nextOptions.filter(o => lowerStrikePrice !== undefined && o.type === 'Put' && o.strikePrice >= lowerStrikePrice && bid < lowerStrikePrice);
-
-    if (buyBackPutOptions.length > 0) {
-        let cost = await buyBackOptions({
-            options: buyBackPutOptions,
-            settings,
-            state,
-            restClient
-        });
-        state.dailyBalance -= cost;
-        return;
-    }
-
-    if (buyBackCallOptions.length > 0) {
-        let cost = await buyBackOptions({
-            options: buyBackCallOptions,
-            settings,
-            state,
-            restClient
-        });
-        state.dailyBalance -= cost;
-        return;
-    }
+    //buyback logic
+    let options = [...state.options.values()];
+    await buyBackOptions({ options, state, settings, restClient, socketClient });
 
     let targetProfit = settings.targetProfit - state.dailyBalance;
     if (targetProfit <= 0) return;
+    //calculate the potential profit from orders pending
+    //  while going through the orders, adjust the sell price to the a price little less than the best ask price
+    //if the potential profit is greater than the targetProfit, then return
+    //if the potential profit is less than the targetProfit, then calculate the difference
+    //using the state.sellSymbol, calculate the required size to achieve the difference
+    //if the size is greater than the maxNotionalValue, then log the error and return
+    //if the size is less than the maxNotionalValue, then submit the order with the size and sell price slightly less than the best ask price
+    //get the next sell symbol from state.sellSymbol and set state.nextSymbolMap.set(state.sellSymbol, nextSellSymbol)
+
 
     if (lowerStrikePrice === undefined && upperStrikePrice === undefined) {
         let midPrice = round(price / settings.stepSize, 0) * settings.stepSize;
