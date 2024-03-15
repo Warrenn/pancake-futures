@@ -353,8 +353,19 @@ async function buyBackOptions({ options, state, settings, restClient, socketClie
             reduceOnly: true
         });
 
-        if (retCode === 0) continue;
-        await Logger.log(`error buying back option: ${symbol} qty:${qty} price:${adjustedBuyBackPrice} retCode:${retCode} retMsg:${retMsg}`);
+        if (retCode !== 0) {
+            await Logger.log(`error buying back option: ${symbol} qty:${qty} price:${adjustedBuyBackPrice} retCode:${retCode} retMsg:${retMsg}`);
+            continue
+        }
+
+        let nextSellSymbol = state.nextSymbolMap.get(symbol);
+        if (nextSellSymbol === undefined) {
+            nextSellSymbol = getNextSellSymbol({ currentSymbol: symbol, state, settings });
+            if (nextSellSymbol === undefined) continue;
+            state.nextSymbolMap.set(symbol, nextSellSymbol);
+            subscribeToOrderBookOptions({ optionSymbols: [nextSellSymbol], socketClient });
+        }
+        state.nextSellSymbol = nextSellSymbol;
     }
 }
 
