@@ -358,14 +358,7 @@ async function buyBackOptions({ options, state, settings, restClient, socketClie
             continue
         }
 
-        let nextSellSymbol = state.nextSymbolMap.get(symbol);
-        if (nextSellSymbol === undefined) {
-            nextSellSymbol = getNextSellSymbol({ currentSymbol: symbol, state, settings });
-            if (nextSellSymbol === undefined) continue;
-            state.nextSymbolMap.set(symbol, nextSellSymbol);
-            subscribeToOrderBookOptions({ optionSymbols: [nextSellSymbol], socketClient });
-        }
-        state.nextSellSymbol = nextSellSymbol;
+        state.nextSellSymbol = counterSymbol;
     }
 }
 
