@@ -541,51 +541,13 @@ async function tradingStrategy(context: Context) {
     if (targetProfit <= 0) return;
     //calculate the potential profit from orders pending
     //  while going through the orders, adjust the sell price to the a price little less than the best ask price
-    //if the potential profit is greater than the targetProfit, then return
-    //if the potential profit is less than the targetProfit, then calculate the difference
+    //if the total potential profit is greater than the targetProfit, then return
+    //if the total potential profit is less than the targetProfit, then calculate the difference
     //using the state.sellSymbol, calculate the required size to achieve the difference
+    // use the best bid price to calculate the required size
     //if the size is greater than the maxNotionalValue, then log the error and return
     //if the size is less than the maxNotionalValue, then submit the order with the size and sell price slightly less than the best ask price
     //get the next sell symbol from state.sellSymbol and set state.nextSymbolMap.set(state.sellSymbol, nextSellSymbol)
-
-
-    if (lowerStrikePrice === undefined && upperStrikePrice === undefined) {
-        let midPrice = round(price / settings.stepSize, 0) * settings.stepSize;
-        let offset = settings.stepSize * settings.stepOffset;
-
-        let priceIsBelowMid = price < midPrice;
-        if (state.bounceCount > settings.bounce) state.bounceCount = 0;
-
-        let shiftStrikePriceByOffset = state.bounceCount === 0;
-        if (priceIsBelowMid && shiftStrikePriceByOffset) lowerStrikePrice = midPrice - offset;
-        if (priceIsBelowMid && !shiftStrikePriceByOffset) upperStrikePrice = midPrice + offset;
-        if (!priceIsBelowMid && shiftStrikePriceByOffset) upperStrikePrice = midPrice + offset;
-        if (!priceIsBelowMid && !shiftStrikePriceByOffset) lowerStrikePrice = midPrice - offset;
-    }
-
-    if (upperStrikePrice !== undefined) {
-        await sellCallOption({
-            strikePrice: upperStrikePrice,
-            targetProfit,
-            nextExpiry,
-            state,
-            settings,
-            restClient
-        });
-        return;
-    }
-
-    if (lowerStrikePrice !== undefined) {
-        await sellPutOption({
-            strikePrice: lowerStrikePrice,
-            targetProfit,
-            nextExpiry,
-            state,
-            settings,
-            restClient
-        });
-        return;
-    }
 }
 
 function getOrderBookSymbols({ positions, settings, state }: { positions: OptionPositon[]; settings: Settings; state: State }): string[] {
