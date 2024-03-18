@@ -564,8 +564,8 @@ await Logger.logVersion();
 await Logger.log('starting');
 
 const
-    keyPrefix = `${process.env.KEY_PREFIX} `,
-    region = `${process.env.AWS_REGION} `,
+    keyPrefix = `${process.env.KEY_PREFIX}`,
+    region = `${process.env.AWS_REGION}`,
     useTestNet = process.env.USE_TESTNET === 'true';
 
 try {
