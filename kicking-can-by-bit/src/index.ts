@@ -593,14 +593,12 @@ try {
         symbol,
         nextExpiry,
         dailyBalance,
-        nextSymbolMap: new Map<string, string>(),
         options,
         bid: 0,
         ask: 0,
         price: 0,
         bounceCount: (1 % settings.bounce),
-        orders,
-        orderBooks: new Map<string, OrderBook>()
+        orders
     } as State;
 
     socketClient.on('update', websocketCallback(state));
