@@ -84,11 +84,11 @@ function getSellSymbol({ price, expiry, shift, settings }: { price: number, expi
     let priceIsBelowStrike = price < strikePrice;
     let expiryString = getExpiryString(expiry.getTime());
 
-    if (priceIsBelowStrike && !shift) return `${settings.base}-${expiryString}-${strikePrice + offset}-C`;
-    if (priceIsBelowStrike && shift) return `${settings.base}-${expiryString}-${strikePrice - offset}-P`;
-    if (!priceIsBelowStrike && !shift) return `${settings.base}-${expiryString}-${strikePrice - offset}-P`;
+    if (priceIsBelowStrike && !shift) return`${settings.base}-${expiryString}-${strikePrice + offset}-C`;
+    if (priceIsBelowStrike && shift) return`${settings.base}-${expiryString}-${strikePrice - offset}-P`;
+    if (!priceIsBelowStrike && !shift) return`${settings.base}-${expiryString}-${strikePrice - offset}-P`;
     //if (!priceIsBelowStrike && shift)
-    return `${settings.base}-${expiryString}-${strikePrice + offset}-C`;
+    return`${settings.base}-${expiryString}-${strikePrice + offset}-C`;
 }
 
 function orderbookUpdate(data: any, state: State) {
@@ -165,22 +165,22 @@ async function getOrderBook({ symbol, restClient, settings }: { symbol: string; 
 }
 
 async function getCredentials({ ssm, name, apiCredentialsKeyPrefix }: { ssm: SSMClient, name: string, apiCredentialsKeyPrefix: string }): Promise<Credentials> {
-    let getCommand = new GetParameterCommand({ Name: `${apiCredentialsKeyPrefix}${name}`, WithDecryption: true });
+    let getCommand = new GetParameterCommand({ Name:`${apiCredentialsKeyPrefix}${name}`, WithDecryption: true });
     let ssmParam = await ssm.send(getCommand);
     return JSON.parse(`${ssmParam.Parameter?.Value}`);
 }
 
 async function getSettings({ ssm, name, keyPrefix }: { ssm: SSMClient, name: string, keyPrefix: string }): Promise<Settings> {
-    let getCommand = new GetParameterCommand({ Name: `${keyPrefix}${name}` });
+    let getCommand = new GetParameterCommand({ Name:`${keyPrefix}${name}` });
     let ssmParam = await ssm.send(getCommand);
     return JSON.parse(`${ssmParam.Parameter?.Value}`);
 }
 
 function getExpiryString(time: number) {
     let expiryDate = new Date(time);
-    let expiryYear = `${expiryDate.getUTCFullYear()}`.substring(2);
+    let expiryYear =`${expiryDate.getUTCFullYear()}`.substring(2);
     let expiryMonth = months[expiryDate.getUTCMonth()];
-    return `${expiryDate.getDate()}${expiryMonth}${expiryYear}`;
+    return`${expiryDate.getDate()}${expiryMonth}${expiryYear}`;
 }
 
 function getNextExpiry() {
@@ -203,7 +203,7 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
     let smallestPriceValue = Number(`1e-${pricePrecision}`);
     let expiry = state.nextExpiry;
     let shift = state.bounceCount % settings.bounce === 0;
-    let startsWith = `${settings.base}-${getExpiryString(expiry.getTime())}`;
+    let startsWith =`${settings.base}-${getExpiryString(expiry.getTime())}`;
     let buyOrders = [...orders.filter(o => o.reduceOnly && o.side === 'Buy' && o.symbol.startsWith(startsWith))];
 
     for (let i = 0; i < options.length; i++) {
@@ -243,13 +243,13 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
 
                 let { retCode, retMsg } = await restClient.amendOrder({
                     orderId: order.id,
-                    price: `${adjustedBuyBackPrice}`,
+                    price:`${adjustedBuyBackPrice}`,
                     symbol: order.symbol,
                     category: 'option'
                 });
                 if (retCode === 0) continue;
 
-                await Logger.log(`error amending buy order: ${order.id} ${order.symbol} price:${adjustedBuyBackPrice} retCode:${retCode} retMsg:${retMsg} `);
+                await Logger.log(`error amending buy order: ${order.id} ${order.symbol} price:${adjustedBuyBackPrice} retCode:${retCode} retMsg:${retMsg}`);
             }
             continue;
         }
@@ -265,7 +265,7 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
         let resultBalance = dailyBalance - buyBackCost;
 
         if (settings.maxLoss > 0 && resultBalance < -settings.maxLoss) {
-            Logger.log(`cant buy back option ${symbol} as resultBalance is less than maxLoss: ${settings.maxLoss} `);
+            Logger.log(`cant buy back option ${symbol} as resultBalance is less than maxLoss: ${settings.maxLoss}`);
             continue;
         }
 
@@ -276,25 +276,25 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
         let counterNotionalValue = counterSize * counterStrikePrice;
 
         if (counterNotionalValue > settings.maxNotionalValue) {
-            Logger.log(`cant buy back option ${symbol} as notionalValue exceeds maxNotionalValue: ${settings.maxNotionalValue} for option: ${counterSymbol} `);
+            Logger.log(`cant buy back option ${symbol} as notionalValue exceeds maxNotionalValue: ${settings.maxNotionalValue} for option: ${counterSymbol}`);
             continue;
         }
 
-        let qty = `${round(option.size, sizePrecision)} `;
+        let qty =`${round(option.size, sizePrecision)}`;
         let { retCode, retMsg } = await restClient.submitOrder({
             symbol,
             side: 'Buy',
-            orderLinkId: `${Date.now()} `,
+            orderLinkId:`${Date.now()}`,
             orderType: 'Limit',
             timeInForce: 'GTC',
             qty,
-            price: `${adjustedBuyBackPrice} `,
+            price:`${adjustedBuyBackPrice}`,
             category: 'option',
             reduceOnly: true
         });
 
         if (retCode !== 0) {
-            await Logger.log(`error buying back option: ${symbol} qty:${qty} price:${adjustedBuyBackPrice} retCode:${retCode} retMsg:${retMsg} `);
+            await Logger.log(`error buying back option: ${symbol} qty:${qty} price:${adjustedBuyBackPrice} retCode:${retCode} retMsg:${retMsg}`);
             continue
         }
     }
@@ -311,7 +311,7 @@ function getSymbolDetails(symbol: string): { base: string, expiry: Date; strikeP
     let type: 'Put' | 'Call' = matches[6] === 'P' ? 'Put' : 'Call';
     let mIndex = months.indexOf(matches[3]);
     let expiry = new Date();
-    let newYear = parseInt(`20${matches[4]} `);
+    let newYear = parseInt(`20${matches[4]}`);
     expiry.setUTCDate(parseInt(matches[2]));
     expiry.setUTCHours(8);
     expiry.setUTCMinutes(0);
@@ -387,7 +387,7 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
         });
 
         if (retCode !== 0) {
-            Logger.log(`getting the orders failed for ${settings.base} ${retMsg} `);
+            Logger.log(`getting the orders failed for ${settings.base} ${retMsg}`);
             return [];
         }
 
@@ -429,9 +429,9 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
     let sizePrecision = precisionMap.get(`${settings.base} OPT`)?.sizePrecision || 1;
     let { nextExpiry, ask, bid, price, bounceCount } = state;
     let shift = bounceCount % settings.bounce === 0;
-    let smallestPriceValue = Number(`1e-${pricePrecision} `);
+    let smallestPriceValue = Number(`1e-${pricePrecision}`);
     let expiryString = getExpiryString(nextExpiry.getTime());
-    let startsWith = `${settings.base} -${expiryString} `;
+    let startsWith =`${settings.base} -${expiryString}`;
     let sellOrders = [...orders.filter(o => o.side === 'Sell' && !o.reduceOnly && o.symbol.startsWith(startsWith))];
     let potentialProfit = 0;
 
@@ -442,7 +442,7 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
             (order.type === 'Put' && bid < order.strikePrice)) {
             let { retCode, retMsg } = await restClient.cancelOrder({ orderId: order.id, symbol: order.symbol, category: 'option' });
             if (retCode === 0) continue;
-            await Logger.log(`error cancelling sell order: ${order.id} ${order.symbol} retCode:${retCode} retMsg:${retMsg} `);
+            await Logger.log(`error cancelling sell order: ${order.id} ${order.symbol} retCode:${retCode} retMsg:${retMsg}`);
         }
 
         let symbol = order.symbol;
@@ -460,8 +460,8 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
 
         let { retCode, retMsg } = await restClient.amendOrder({
             orderId: order.id,
-            price: `${adjustedOrderPrice}`,
-            qty: `${qty}`,
+            price:`${adjustedOrderPrice}`,
+            qty:`${qty}`,
             symbol: order.symbol,
             category: 'option'
         });
@@ -470,7 +470,7 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
             continue;
         };
         potentialProfit += value - order.fee;
-        await Logger.log(`error amending order: ${order.id} ${order.symbol} price:${adjustedOrderPrice} qty:${qty} retCode:${retCode} retMsg:${retMsg} `);
+        await Logger.log(`error amending order: ${order.id} ${order.symbol} price:${adjustedOrderPrice} qty:${qty} retCode:${retCode} retMsg:${retMsg}`);
     }
 
     if (potentialProfit >= targetProfit) return;
@@ -495,7 +495,7 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
     let sellSize = round(difference / sellProfit, sizePrecision);
     let notionalValue = sellSize * strikePrice;
     if (settings.maxNotionalValue > 0 && notionalValue > settings.maxNotionalValue) {
-        Logger.log(`cant sell option ${sellSymbol} as notionalValue exceeds maxNotionalValue: ${settings.maxNotionalValue} `);
+        Logger.log(`cant sell option ${sellSymbol} as notionalValue exceeds maxNotionalValue: ${settings.maxNotionalValue}`);
         return;
     }
 
@@ -503,18 +503,18 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
 
     let { retCode, retMsg } = await restClient.submitOrder({
         symbol: sellSymbol,
-        orderLinkId: `${Date.now()} `,
+        orderLinkId:`${Date.now()}`,
         side: 'Sell',
         orderType: 'Limit',
         timeInForce: 'GTC',
-        qty: `${sellSize} `,
-        price: `${adjustedSellPrice} `,
+        qty:`${sellSize}`,
+        price:`${adjustedSellPrice}`,
         category: 'option',
         reduceOnly: false
     });
     if (retCode === 0) return;
 
-    await Logger.log(`error selling option: ${sellSymbol} qty:${sellSize} price:${adjustedSellPrice} retCode:${retCode} retMsg:${retMsg} `);
+    await Logger.log(`error selling option: ${sellSymbol} qty:${sellSize} price:${adjustedSellPrice} retCode:${retCode} retMsg:${retMsg}`);
 }
 
 async function getRunningBalance({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<number> {
@@ -564,8 +564,8 @@ await Logger.logVersion();
 await Logger.log('starting');
 
 const
-    keyPrefix = `${process.env.KEY_PREFIX}`,
-    region = `${process.env.AWS_REGION}`,
+    keyPrefix =`${process.env.KEY_PREFIX}`,
+    region =`${process.env.AWS_REGION}`,
     useTestNet = process.env.USE_TESTNET === 'true';
 
 try {
@@ -589,7 +589,7 @@ try {
     let options = await getOptions({ settings, restClient });
     let nextExpiry = getNextExpiry();
     let dailyBalance = await getRunningBalance({ restClient, settings });
-    let symbol = `${settings.base}${settings.quote} `;
+    let symbol =`${settings.base}${settings.quote}`;
     let orders = await getOrders({ restClient, settings });
     settings.bounce = settings.bounce <= 0 ? 1 : settings.bounce;
 
@@ -607,11 +607,11 @@ try {
 
     socketClient.on('update', websocketCallback(state));
 
-    await socketClient.subscribeV5(`orderbook.1.${state.symbol} `, 'linear');
+    await socketClient.subscribeV5(`orderbook.1.${state.symbol}`, 'linear');
     await socketClient.subscribeV5('position', 'option');
 
-    await Logger.log(`state: ${JSON.stringify(state)} `);
-    await Logger.log(`settings: ${JSON.stringify(settings)} `);
+    await Logger.log(`state: ${JSON.stringify(state)}`);
+    await Logger.log(`settings: ${JSON.stringify(settings)}`);
 
     let context: Context = {
         state,
@@ -626,12 +626,12 @@ try {
         }
         catch (error) {
             let err = error as Error;
-            await Logger.log(`error: message:${err.message} stack:${err.stack} `);
+            await Logger.log(`error: message:${err.message} stack:${err.stack}`);
         }
     }
 }
 catch (error) {
     let err = error as Error;
-    await Logger.log(`error: message:${err.message} stack:${err.stack} `);
+    await Logger.log(`error: message:${err.message} stack:${err.stack}`);
     process.exit(1);
 }
