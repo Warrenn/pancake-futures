@@ -431,7 +431,7 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
     let shift = bounceCount % settings.bounce === 0;
     let smallestPriceValue = Number(`1e-${pricePrecision}`);
     let expiryString = getExpiryString(nextExpiry.getTime());
-    let startsWith =`${settings.base} -${expiryString}`;
+    let startsWith =`${settings.base}-${expiryString}`;
     let sellOrders = [...orders.filter(o => o.side === 'Sell' && !o.reduceOnly && o.symbol.startsWith(startsWith))];
     let potentialProfit = 0;
 
