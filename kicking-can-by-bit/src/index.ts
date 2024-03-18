@@ -240,7 +240,6 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
             for (let i = 0; i < buyOrders.length; i++) {
                 let order = buyOrders[i];
                 if (buyBackBid !== undefined && order.price === buyBackBid) continue;
-                let value = order.price * order.size;
 
                 let { retCode, retMsg } = await restClient.amendOrder({
                     orderId: order.id,
