@@ -302,7 +302,7 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
 
 
 function getSymbolDetails(symbol: string): { base: string, expiry: Date; strikePrice: number; type: 'Put' | 'Call' } | undefined {
-    let checkExpression = new RegExp(`^ (\\w +) -(\\d +) (\\w{ 3 }) (\\d{ 2 }) -(\\d *) -(P | C)$`);
+    let checkExpression = new RegExp(`^(\\w+)-(\\d+)(\\w{3})(\\d{2})-(\\d*)-(P|C)$`);
     let matches = symbol.match(checkExpression);
     if (!matches) return undefined;
 
@@ -425,8 +425,8 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
 }
 
 async function sellRequiredOptions({ state, orders, targetProfit, settings, restClient }: { state: State; orders: Order[]; targetProfit: number; settings: Settings; restClient: RestClientV5 }) {
-    let pricePrecision = precisionMap.get(`${settings.base} OPT`)?.pricePrecision || 2;
-    let sizePrecision = precisionMap.get(`${settings.base} OPT`)?.sizePrecision || 1;
+    let pricePrecision = precisionMap.get(`${settings.base}OPT`)?.pricePrecision || 1;
+    let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let { nextExpiry, ask, bid, price, bounceCount } = state;
     let shift = bounceCount % settings.bounce === 0;
     let smallestPriceValue = Number(`1e-${pricePrecision}`);
