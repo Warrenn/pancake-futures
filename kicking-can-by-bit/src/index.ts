@@ -241,18 +241,16 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
                 let order = buyOrders[i];
                 if (buyBackBid !== undefined && order.price === buyBackBid) continue;
                 let value = order.price * order.size;
-                let qty = round(value / adjustedBuyBackPrice, sizePrecision);
 
                 let { retCode, retMsg } = await restClient.amendOrder({
                     orderId: order.id,
-                    price: `${adjustedBuyBackPrice} `,
+                    price: `${adjustedBuyBackPrice}`,
                     symbol: order.symbol,
-                    qty: `${qty}`,
                     category: 'option'
                 });
                 if (retCode === 0) continue;
 
-                await Logger.log(`error amending order: ${order.id} ${order.symbol} price:${adjustedBuyBackPrice} qty:${qty} retCode:${retCode} retMsg:${retMsg} `);
+                await Logger.log(`error amending buy order: ${order.id} ${order.symbol} price:${adjustedBuyBackPrice} retCode:${retCode} retMsg:${retMsg} `);
             }
             continue;
         }
