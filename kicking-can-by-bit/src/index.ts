@@ -4,14 +4,13 @@ import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import dotenv from 'dotenv';
 import { round } from './calculations.js';
 import { Logger } from './logger.js';
-import { get } from 'http';
 
 const commission = 0.0002;
 const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const precisionMap = new Map<string, SymbolPrecision>()
 precisionMap.set('ETHPERP', { pricePrecision: 2, sizePrecision: 3 });
 precisionMap.set('ETHUSDT', { pricePrecision: 2, sizePrecision: 3 });
-precisionMap.set('ETHOPT', { pricePrecision: 2, sizePrecision: 1 });
+precisionMap.set('ETHOPT', { pricePrecision: 1, sizePrecision: 1 });
 
 type OptionPositon = {
     symbol: string
@@ -48,9 +47,6 @@ type State = {
     symbol: string
     nextExpiry: Date
     options: Map<string, OptionPositon>
-    orders: Map<string, Order>
-    orderBooks: Map<string, OrderBook>
-    dailyBalance: number
     bounceCount: number
 }
 
@@ -80,7 +76,6 @@ type Context = {
     state: State
     settings: Settings
     restClient: RestClientV5
-    socketClient: WebsocketClient
 }
 
 function getSellSymbol({ price, expiry, shift, settings }: { price: number, expiry: Date, shift: boolean, settings: Settings }): string {
@@ -103,71 +98,11 @@ function orderbookUpdate(data: any, state: State) {
     let precision = precisionMap.get(state.symbol)?.pricePrecision || 2;
     let ob = data.data;
     let symbol = topicParts[2];
-    if (symbol === state.symbol) {
-        if (ob.b.length > 0 && ob.b[0].length > 0) state.bid = parseFloat(ob.b[0][0]);
-        if (ob.a.length > 0 && ob.a[0].length > 0) state.ask = parseFloat(ob.a[0][0]);
+    if (symbol !== state.symbol) return;
+    if (ob.b.length > 0 && ob.b[0].length > 0) state.bid = parseFloat(ob.b[0][0]);
+    if (ob.a.length > 0 && ob.a[0].length > 0) state.ask = parseFloat(ob.a[0][0]);
 
-        state.price = round((state.bid + state.ask) / 2, precision);
-        return;
-    }
-    let optionOb: OrderBook = {
-        symbol,
-        ask: (ob.a.length > 0 && ob.a[0].length > 0) ? parseFloat(ob.a[0][0]) : undefined,
-        bid: (ob.b.length > 0 && ob.b[0].length > 0) ? parseFloat(ob.b[0][0]) : undefined
-    }
-    if (optionOb.ask !== undefined && optionOb.bid !== undefined) optionOb.price = round((optionOb.bid + optionOb.ask) / 2, precision);
-    state.orderBooks.set(symbol, optionOb);
-}
-
-function orderUpdate(data: any, state: State, settings: Settings) {
-    if (!data || !data.data || data.data.length < 0 || !data.data[0]) return;
-    let orderData = data.data[0];
-    if (orderData.stopOrderType !== '') return;
-    if (orderData.category !== 'option') return;
-
-    let symbol = orderData.symbol;
-    let details = getSymbolDetails(symbol);
-    if (!details) return;
-
-    let { base, strikePrice, type } = details;
-    if (base !== settings.base) return;
-
-    let side = orderData.side;
-    let size = parseFloat(orderData.qty);
-    let price = parseFloat(orderData.price);
-    let value = size * price;
-    let fee = strikePrice * commission * size;
-
-    let orderId = orderData.orderId;
-    let orderStatus = orderData.orderStatus;
-    let reduceOnly = orderData.reduceOnly;
-
-    switch (orderStatus) {
-        case 'Cancelled':
-        case 'Rejected':
-        case 'Deactivated':
-            state.orders.delete(orderId);
-            break;
-        case 'Filled':
-            if (side === 'Buy') state.dailyBalance -= value + fee;
-            if (side === 'Sell') state.dailyBalance += value - fee;
-            state.orders.delete(orderId);
-            break;
-        case 'New':
-            let order: Order = {
-                id: orderId,
-                symbol,
-                size,
-                side,
-                fee,
-                price,
-                type,
-                strikePrice,
-                reduceOnly
-            }
-            state.orders.set(orderId, order);
-            break;
-    }
+    state.price = round((state.bid + state.ask) / 2, precision);
 }
 
 function positionUpdate(data: any, state: State) {
@@ -192,7 +127,7 @@ function positionUpdate(data: any, state: State) {
     state.options.set(symbol, position);
 }
 
-function websocketCallback(state: State, settings: Settings): (response: any) => void {
+function websocketCallback(state: State): (response: any) => void {
     return (data) => {
         if (!data.topic) return;
         let topic = data.topic.split('.');
@@ -204,11 +139,29 @@ function websocketCallback(state: State, settings: Settings): (response: any) =>
             case 'position':
                 positionUpdate(data, state);
                 break;
-            case 'order':
-                orderUpdate(data, state, settings);
-                break;
         }
     }
+}
+
+async function getOrderBook({ symbol, restClient, settings }: { symbol: string; restClient: RestClientV5, settings: Settings }): Promise<OrderBook> {
+    let pricePrecision = precisionMap.get(`${settings.base}OPT`)?.pricePrecision || 1;
+    let { retCode, retMsg, result } = await restClient.getOrderbook({ symbol, category: 'option' });
+    if (retCode !== 0) {
+        await Logger.log(`error getting orderbook for ${symbol} retCode:${retCode} retMsg:${retMsg}`);
+        return { symbol };
+    }
+
+    let bid: number | undefined = (result.b.length > 0 && result.b[0].length > 0) ? parseFloat(result.b[0][0]) : undefined;
+    let ask: number | undefined = (result.a.length > 0 && result.a[0].length > 0) ? parseFloat(result.a[0][0]) : undefined;
+    let price = (bid !== undefined && ask !== undefined) ? round((bid + ask) / 2, pricePrecision) : undefined;
+
+    let orderBook: OrderBook = {
+        symbol,
+        bid,
+        ask,
+        price
+    };
+    return orderBook;
 }
 
 async function getCredentials({ ssm, name, apiCredentialsKeyPrefix }: { ssm: SSMClient, name: string, apiCredentialsKeyPrefix: string }): Promise<Credentials> {
@@ -242,14 +195,16 @@ function getNextExpiry() {
     return expiryDate;
 }
 
-async function buyBackOptions({ options, state, settings, restClient }: { options: OptionPositon[]; state: State; settings: Settings; restClient: RestClientV5 }): Promise<void> {
+async function buyBackOptions({ options, orders, dailyBalance, state, settings, restClient }: { options: OptionPositon[]; orders: Order[]; dailyBalance: number; state: State; settings: Settings; restClient: RestClientV5 }): Promise<void> {
     let price = state.price;
     if (price <= 0) return;
-    let pricePrecision = precisionMap.get(`${settings.base}OPT`)?.pricePrecision || 2;
+    let pricePrecision = precisionMap.get(`${settings.base}OPT`)?.pricePrecision || 1;
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let smallestPriceValue = Number(`1e-${pricePrecision}`);
     let expiry = state.nextExpiry;
     let shift = state.bounceCount % settings.bounce === 0;
+    let startsWith = `${settings.base}-${getExpiryString(expiry.getTime())}`;
+    let buyOrders = [...orders.filter(o => o.reduceOnly && o.side === 'Buy' && o.symbol.startsWith(startsWith))];
 
     for (let i = 0; i < options.length; i++) {
         let option = options[i];
@@ -259,13 +214,12 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
 
         let symbol = option.symbol;
         let strikePrice = option.strikePrice;
-        let orders = [...state.orders.values()].filter(o => o.symbol === symbol && o.side === 'Buy' && o.reduceOnly);
         let positionITM = option.type === 'Call' ? state.ask >= strikePrice : state.bid <= strikePrice;
 
-        if (!positionITM && orders.length === 0) continue;
-        if (!positionITM && orders.length > 0) {
-            for (let i = 0; i < orders.length; i++) {
-                let order = orders[i];
+        if (!positionITM && buyOrders.length === 0) continue;
+        if (!positionITM && buyOrders.length > 0) {
+            for (let i = 0; i < buyOrders.length; i++) {
+                let order = buyOrders[i];
                 let { retCode, retMsg } = await restClient.cancelOrder({ orderId: order.id, symbol: order.symbol, category: 'option' });
                 if (retCode === 0) continue;
                 await Logger.log(`error cancelling reduce only order: ${order.id} ${order.symbol} retCode:${retCode} retMsg:${retMsg}`);
@@ -273,9 +227,7 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
             continue;
         }
 
-        let buyBackBid = state.orderBooks.get(symbol)?.bid;
-        let buyBackAsk = state.orderBooks.get(symbol)?.ask;
-
+        let { bid: buyBackBid, ask: buyBackAsk } = await getOrderBook({ symbol, restClient, settings });;
         if (buyBackAsk === undefined) {
             await Logger.log(`cant buy back: ${symbol} as no ask price in orderbook`);
             continue;
@@ -284,9 +236,9 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
             ? round(buyBackAsk - smallestPriceValue, pricePrecision)
             : round(buyBackBid + smallestPriceValue, pricePrecision);
 
-        if (positionITM && orders.length > 0) {
-            for (let i = 0; i < orders.length; i++) {
-                let order = orders[i];
+        if (positionITM && buyOrders.length > 0) {
+            for (let i = 0; i < buyOrders.length; i++) {
+                let order = buyOrders[i];
                 if (buyBackBid !== undefined && order.price === buyBackBid) continue;
 
                 let { retCode, retMsg } = await restClient.amendOrder({
@@ -303,14 +255,14 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
         }
 
         let counterSymbol = getSellSymbol({ price, expiry, shift, settings });
-        let counterBid = state.orderBooks.get(counterSymbol)?.bid;
+        let { bid: counterBid } = await getOrderBook({ symbol: counterSymbol, restClient, settings });
         if (counterBid === undefined) {
             await Logger.log(`cant buy back: ${symbol} as there is no counter order for ${counterSymbol} in orderbook`);
             continue;
         }
 
         let buyBackCost = (adjustedBuyBackPrice * size) + (strikePrice * size * commission);
-        let resultBalance = state.dailyBalance - buyBackCost;
+        let resultBalance = dailyBalance - buyBackCost;
 
         if (settings.maxLoss > 0 && resultBalance < -settings.maxLoss) {
             Logger.log(`cant buy back option ${symbol} as resultBalance is less than maxLoss: ${settings.maxLoss}`);
@@ -332,6 +284,7 @@ async function buyBackOptions({ options, state, settings, restClient }: { option
         let { retCode, retMsg } = await restClient.submitOrder({
             symbol,
             side: 'Buy',
+            orderLinkId: `${Date.now()}`,
             orderType: 'Limit',
             timeInForce: 'GTC',
             qty,
@@ -400,47 +353,29 @@ async function getOptions({ restClient, settings }: { restClient: RestClientV5; 
 }
 
 async function tradingStrategy(context: Context) {
-    let { state, settings, restClient, socketClient } = context;
+    let { state, settings, restClient } = context;
 
     let nextExpiry = getNextExpiry();
     let nextTime = nextExpiry.getTime();
 
     if (nextTime !== state.nextExpiry.getTime()) {
         state.nextExpiry = nextExpiry;
-        state.dailyBalance = 0;
         [...state.options.keys()].forEach(k => (state.options.get(k)?.expiry.getTime() || nextTime) < nextTime && state.options.delete(k));
         return;
     }
 
-    await subscribeToOrderBookOptions({ state, settings, socketClient });
-
+    let dailyBalance = await getRunningBalance({ restClient, settings });
+    let orders = await getOrders({ restClient, settings });
     let options = [...state.options.values()];
-    await buyBackOptions({ options, state, settings, restClient });
+    await buyBackOptions({ options, orders, dailyBalance, state, settings, restClient });
 
-    let targetProfit = settings.targetProfit - state.dailyBalance;
+    let targetProfit = settings.targetProfit - dailyBalance;
     if (targetProfit <= 0) return;
 
-    await sellRequiredOptions({ state, targetProfit, settings, restClient });
+    await sellRequiredOptions({ state, orders, targetProfit, settings, restClient });
 }
 
-async function subscribeToOrderBookOptions({ state, settings, socketClient }: { state: State; settings: Settings; socketClient: WebsocketClient; }) {
-    let offset = settings.stepOffset + 1;
-    let midPrice = round(state.price / settings.stepSize, 0) * settings.stepSize;
-    let expiryString = getExpiryString(state.nextExpiry.getTime());
-
-    for (let i = -offset; i <= offset; i++) {
-        let offsetSize = settings.stepSize * i;
-        let strikePrice = midPrice + offsetSize;
-
-        let callSymbol = `${settings.base}-${expiryString}-${strikePrice}-C`;
-        if (!state.orderBooks.has(callSymbol)) await socketClient.subscribeV5(`orderbook.25.${callSymbol}`, 'option');
-
-        let putSymbol = `${settings.base}-${expiryString}-${strikePrice}-P`;
-        if (!state.orderBooks.has(putSymbol)) await socketClient.subscribeV5(`orderbook.25.${putSymbol}`, 'option');
-    }
-}
-
-async function getOrders({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<Map<string, Order>> {
+async function getOrders({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<Order[]> {
     let orders: Map<string, Order> = new Map();
     let cursor: string | undefined = undefined;
 
@@ -453,14 +388,14 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
 
         if (retCode !== 0) {
             Logger.log(`getting the orders failed for ${settings.base} ${retMsg}`);
-            return orders;
+            return [];
         }
 
         for (let i = 0; i < list.length; i++) {
             let order = list[i];
             if (['New', 'Created', 'Active'].indexOf(order.orderStatus) === -1) continue;
 
-            let qty = parseFloat(order.qty);
+            let size = parseFloat(order.qty);
             let price = parseFloat(order.price);
             let details = getSymbolDetails(order.symbol);
             if (!details) continue;
@@ -468,12 +403,12 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
             let { strikePrice, type, base } = details;
             if (base !== settings.base) continue;
 
-            let fee = strikePrice * commission * qty;
+            let fee = strikePrice * commission * size;
 
             orders.set(order.orderId, {
                 id: order.orderId,
                 symbol: order.symbol,
-                size: qty,
+                size,
                 side: order.side,
                 strikePrice,
                 price,
@@ -486,22 +421,22 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
         if (!(nextPageCursor as string)) break;
         cursor = nextPageCursor as string;
     }
-    return orders;
+    return [...orders.values()];
 }
 
-async function sellRequiredOptions({ state, targetProfit, settings, restClient }: { state: State; targetProfit: number; settings: Settings; restClient: RestClientV5 }) {
+async function sellRequiredOptions({ state, orders, targetProfit, settings, restClient }: { state: State; orders: Order[]; targetProfit: number; settings: Settings; restClient: RestClientV5 }) {
     let pricePrecision = precisionMap.get(`${settings.base}OPT`)?.pricePrecision || 2;
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let { nextExpiry, ask, bid, price, bounceCount } = state;
-    let shift = bounceCount % settings.bounce === 0
+    let shift = bounceCount % settings.bounce === 0;
     let smallestPriceValue = Number(`1e-${pricePrecision}`);
     let expiryString = getExpiryString(nextExpiry.getTime());
     let startsWith = `${settings.base}-${expiryString}`;
-    let orders = [...state.orders.values()].filter(o => o.side === 'Sell' && !o.reduceOnly && o.symbol.startsWith(startsWith));
+    let sellOrders = [...orders.filter(o => o.side === 'Sell' && !o.reduceOnly && o.symbol.startsWith(startsWith))];
     let potentialProfit = 0;
 
-    for (let i = 0; i < orders.length; i++) {
-        let order = orders[i];
+    for (let i = 0; i < sellOrders.length; i++) {
+        let order = sellOrders[i];
 
         if ((order.type === 'Call' && ask > order.strikePrice) ||
             (order.type === 'Put' && bid < order.strikePrice)) {
@@ -511,10 +446,13 @@ async function sellRequiredOptions({ state, targetProfit, settings, restClient }
         }
 
         let symbol = order.symbol;
-        let orderAsk = state.orderBooks.get(symbol)?.ask;
+
+        let { ask: orderAsk } = await getOrderBook({ symbol, restClient, settings });
         if (orderAsk === undefined) orderAsk = order.price;
-        potentialProfit += (order.price * order.size) - order.fee;
-        if (orderAsk === order.price) continue;
+        if (orderAsk === order.price) {
+            potentialProfit += (order.price * order.size) - order.fee;
+            continue;
+        };
 
         let adjustedOrderPrice = round(orderAsk - smallestPriceValue, pricePrecision);
         let { retCode, retMsg } = await restClient.amendOrder({
@@ -523,7 +461,11 @@ async function sellRequiredOptions({ state, targetProfit, settings, restClient }
             symbol: order.symbol,
             category: 'option'
         });
-        if (retCode === 0) continue;
+        if (retCode === 0) {
+            potentialProfit += (adjustedOrderPrice * order.size) - order.fee;
+            continue;
+        };
+        potentialProfit += (order.price * order.size) - order.fee;
         await Logger.log(`error amending order: ${order.id} ${order.symbol} price:${adjustedOrderPrice} retCode:${retCode} retMsg:${retMsg}`);
     }
 
@@ -534,8 +476,7 @@ async function sellRequiredOptions({ state, targetProfit, settings, restClient }
     let details = getSymbolDetails(sellSymbol);
     if (!details) return;
 
-    let sellAsk = state.orderBooks.get(sellSymbol)?.ask;
-    let sellBid = state.orderBooks.get(sellSymbol)?.bid;
+    let { bid: sellBid, ask: sellAsk } = await getOrderBook({ symbol: sellSymbol, restClient, settings });
     let { strikePrice } = details;
     if (sellBid === undefined) {
         await Logger.log(`cant sell option ${sellSymbol} as there is no bid price in orderbook`);
@@ -554,20 +495,22 @@ async function sellRequiredOptions({ state, targetProfit, settings, restClient }
         return;
     }
 
-    let qty = `${round(sellSize, sizePrecision)}`;
+    if (sellSize <= 0) return;
+
     let { retCode, retMsg } = await restClient.submitOrder({
         symbol: sellSymbol,
+        orderLinkId: `${Date.now()}`,
         side: 'Sell',
         orderType: 'Limit',
         timeInForce: 'GTC',
-        qty,
+        qty: `${sellSize}`,
         price: `${adjustedSellPrice}`,
         category: 'option',
         reduceOnly: false
     });
     if (retCode === 0) return;
 
-    await Logger.log(`error selling option: ${sellSymbol} qty:${qty} price:${adjustedSellPrice} retCode:${retCode} retMsg:${retMsg}`);
+    await Logger.log(`error selling option: ${sellSymbol} qty:${sellSize} price:${adjustedSellPrice} retCode:${retCode} retMsg:${retMsg}`);
 }
 
 async function getRunningBalance({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<number> {
@@ -660,13 +603,10 @@ try {
         orderBooks: new Map<string, OrderBook>()
     } as State;
 
-    socketClient.on('update', websocketCallback(state, settings));
+    socketClient.on('update', websocketCallback(state));
 
     await socketClient.subscribeV5(`orderbook.1.${state.symbol}`, 'linear');
-    await socketClient.subscribeV5('order', 'option');
     await socketClient.subscribeV5('position', 'option');
-
-    await subscribeToOrderBookOptions({ state, settings, socketClient });
 
     await Logger.log(`state: ${JSON.stringify(state)}`);
     await Logger.log(`settings: ${JSON.stringify(settings)}`);
@@ -674,8 +614,7 @@ try {
     let context: Context = {
         state,
         settings,
-        restClient,
-        socketClient
+        restClient
     }
 
     while (true) {
