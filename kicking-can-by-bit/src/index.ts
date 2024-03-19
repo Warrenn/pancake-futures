@@ -151,8 +151,8 @@ async function getOrderBook({ symbol, restClient, settings }: { symbol: string; 
         return { symbol };
     }
 
-    let bid: number | undefined = (result.b.length > 0 && result.b[0].length > 0) ? parseFloat(result.b[0][0]) : undefined;
-    let ask: number | undefined = (result.a.length > 0 && result.a[0].length > 0) ? parseFloat(result.a[0][0]) : undefined;
+    let bid: number | undefined = (result?.b?.length > 0 && result.b[0].length > 0) ? parseFloat(result.b[0][0]) : undefined;
+    let ask: number | undefined = (result?.a?.length > 0 && result.a[0].length > 0) ? parseFloat(result.a[0][0]) : undefined;
     let price = (bid !== undefined && ask !== undefined) ? round((bid + ask) / 2, pricePrecision) : undefined;
 
     let orderBook: OrderBook = {
