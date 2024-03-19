@@ -289,7 +289,7 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
             side: 'Buy',
             orderLinkId: `${Date.now()}`,
             orderType: 'Limit',
-            timeInForce: 'GTC',
+            timeInForce: 'PostOnly',
             qty,
             price: `${adjustedBuyBackPrice}`,
             category: 'option',
@@ -446,23 +446,14 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
             (order.type === 'Put' && bid < order.strikePrice)) {
             let { retCode, retMsg } = await restClient.cancelOrder({ orderId: order.id, symbol: order.symbol, category: 'option' });
             if (retCode === 0) {
-                await Logger.log(`cancelled sell order: ${order.id} ${order.symbol} ask:${ask} bid:${bid} strikePrice:${order.strikePrice} type:${order.type}`);
+                await Logger.log(`ITM cancel sell order: ${order.id} ${order.symbol} ask:${ask} bid:${bid} strikePrice:${order.strikePrice} type:${order.type}`);
                 continue;
             }
-            await Logger.log(`error cancelling sell order: ${order.id} ${order.symbol} retCode:${retCode} retMsg:${retMsg}`);
+            await Logger.log(`error cancelling ITM sell order: ${order.id} ${order.symbol} retCode:${retCode} retMsg:${retMsg}`);
         }
 
         let symbol = order.symbol;
         let value = order.price * order.size;
-
-        if (potentialProfit + value - order.fee >= targetProfit) {
-            let { retCode, retMsg } = await restClient.cancelOrder({ orderId: order.id, symbol: order.symbol, category: 'option' });
-            if (retCode === 0) {
-                await Logger.log(`cancelled sell order: ${order.id} ${order.symbol} potentialProfit:${potentialProfit} value:${value} targetProfit:${targetProfit} overrun:${potentialProfit + value - order.fee}`);
-                continue;
-            }
-            await Logger.log(`error cancelling sell order: ${order.id} ${order.symbol} retCode:${retCode} retMsg:${retMsg}`);
-        };
 
         potentialProfit += value - order.fee;
 
@@ -517,7 +508,7 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
         orderLinkId: `${Date.now()}`,
         side: 'Sell',
         orderType: 'Limit',
-        timeInForce: 'GTC',
+        timeInForce: 'PostOnly',
         qty: `${sellSize}`,
         price: `${adjustedSellPrice}`,
         category: 'option',
