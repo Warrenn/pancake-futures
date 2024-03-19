@@ -204,7 +204,6 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
     let expiry = state.nextExpiry;
     let shift = state.bounceCount % settings.bounce === 0;
     let startsWith = `${settings.base}-${getExpiryString(expiry.getTime())}`;
-    let buyOrders = [...orders.filter(o => o.reduceOnly && o.side === 'Buy' && o.symbol.startsWith(startsWith))];
 
     for (let i = 0; i < options.length; i++) {
         let option = options[i];
@@ -215,14 +214,18 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
         let symbol = option.symbol;
         let strikePrice = option.strikePrice;
         let positionITM = option.type === 'Call' ? state.ask >= strikePrice : state.bid <= strikePrice;
+        let buyOrders = [...orders.filter(o => o.reduceOnly && o.side === 'Buy' && o.symbol.startsWith(startsWith) && o.strikePrice === strikePrice)];
 
         if (!positionITM && buyOrders.length === 0) continue;
         if (!positionITM && buyOrders.length > 0) {
             for (let i = 0; i < buyOrders.length; i++) {
                 let order = buyOrders[i];
                 let { retCode, retMsg } = await restClient.cancelOrder({ orderId: order.id, symbol: order.symbol, category: 'option' });
-                if (retCode === 0) continue;
-                await Logger.log(`error cancelling reduce only order: ${order.id} ${order.symbol} retCode:${retCode} retMsg:${retMsg}`);
+                if (retCode === 0) {
+                    await Logger.log(`cancelled reduce only order: ${order.id} ${order.symbol} ask:${state.ask} bid:${state.bid} strikePrice:${strikePrice} type:${option.type}`);
+                    continue;
+                }
+                await Logger.log(`error cancelling reduce only order: ${order.id} ${order.symbol} ask:${state.ask} bid:${state.bid} strikePrice:${strikePrice} type:${option.type} retCode:${retCode} retMsg:${retMsg}`);
             }
             continue;
         }
@@ -293,9 +296,10 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
             reduceOnly: true
         });
 
-        if (retCode !== 0) {
+        if (retCode === 0) {
+            await Logger.log(`buying back option: ${symbol} qty:${qty} price:${adjustedBuyBackPrice}`);
+        } else {
             await Logger.log(`error buying back option: ${symbol} qty:${qty} price:${adjustedBuyBackPrice} retCode:${retCode} retMsg:${retMsg}`);
-            continue
         }
     }
 }
@@ -441,7 +445,10 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
         if ((order.type === 'Call' && ask > order.strikePrice) ||
             (order.type === 'Put' && bid < order.strikePrice)) {
             let { retCode, retMsg } = await restClient.cancelOrder({ orderId: order.id, symbol: order.symbol, category: 'option' });
-            if (retCode === 0) continue;
+            if (retCode === 0) {
+                await Logger.log(`cancelled sell order: ${order.id} ${order.symbol} ask:${ask} bid:${bid} strikePrice:${order.strikePrice} type:${order.type}`);
+                continue;
+            }
             await Logger.log(`error cancelling sell order: ${order.id} ${order.symbol} retCode:${retCode} retMsg:${retMsg}`);
         }
 
@@ -450,7 +457,10 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
 
         if (potentialProfit + value - order.fee >= targetProfit) {
             let { retCode, retMsg } = await restClient.cancelOrder({ orderId: order.id, symbol: order.symbol, category: 'option' });
-            if (retCode === 0) continue;
+            if (retCode === 0) {
+                await Logger.log(`cancelled sell order: ${order.id} ${order.symbol} potentialProfit:${potentialProfit} value:${value} targetProfit:${targetProfit} overrun:${potentialProfit + value - order.fee}`);
+                continue;
+            }
             await Logger.log(`error cancelling sell order: ${order.id} ${order.symbol} retCode:${retCode} retMsg:${retMsg}`);
         };
 
@@ -513,7 +523,10 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
         category: 'option',
         reduceOnly: false
     });
-    if (retCode === 0) return;
+    if (retCode === 0) {
+        await Logger.log(`selling option: ${sellSymbol} qty:${sellSize} price:${adjustedSellPrice}`);
+        return;
+    }
 
     await Logger.log(`error selling option: ${sellSymbol} qty:${sellSize} price:${adjustedSellPrice} retCode:${retCode} retMsg:${retMsg}`);
 }
