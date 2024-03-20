@@ -1,15 +1,15 @@
 import AdmZip from 'adm-zip';
 import fs from 'fs';
 
-type backtestDataCallback = (data: { time: Date, open: number, high: number, low: number, close: number, volume: number }) => void;
+export type BacktestDataCallback = (data: { time: Date, open: number, high: number, low: number, close: number, volume: number }) => void;
 
-export function backtestData({ dataFolder, symbol, startTime, endTime, callback }: { dataFolder: string, symbol: string, startTime: Date, endTime: Date, callback: backtestDataCallback }) {
+export function backtestData({ dataFolder, symbol, startTime, endTime, callback }: { dataFolder: string, symbol: string, startTime: Date, endTime: Date, callback: BacktestDataCallback }) {
     let date = startTime;
 
     while (date < endTime) {
         let fileName = `${dataFolder}/${symbol}-${date.toISOString().split('T')[0]}.zip`;
         if (!fs.existsSync(fileName)) {
-            console.log(`File ${fileName} not found`);
+            console.error(`File ${fileName} not found`);
             continue;
         }
         let zipFile = new AdmZip(fileName);

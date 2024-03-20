@@ -14,7 +14,6 @@
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-ssm": "^3.519.0",
-    "@types/adm-zip": "^0.5.5",
     "adm-zip": "^0.5.12",
     "bybit-api": "^3.9.5",
     "dotenv": "^16.0.3"
@@ -22,6 +21,7 @@
   "devDependencies": {
     "@types/node": "^18.11.9",
     "@types/uuid": "^8.3.4",
-    "typescript": "^4.8.4"
+    "typescript": "^4.8.4",
+    "@types/adm-zip": "^0.5.5"
   }
 }
