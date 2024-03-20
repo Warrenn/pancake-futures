@@ -14,6 +14,8 @@
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-ssm": "^3.519.0",
+    "@types/adm-zip": "^0.5.5",
+    "adm-zip": "^0.5.12",
     "bybit-api": "^3.9.5",
     "dotenv": "^16.0.3"
   },
