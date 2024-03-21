@@ -373,7 +373,7 @@ async function tradingStrategy(context: Context) {
 }
 
 async function getOrders({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<Order[]> {
-    let orders: Map<string, Order> = new Map();
+    let orders: Order[] = [];
     let cursor: string | undefined = undefined;
 
     while (true) {
@@ -402,7 +402,7 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
 
             let fee = strikePrice * commission * size;
 
-            orders.set(order.orderId, {
+            orders.push({
                 id: order.orderId,
                 symbol: order.symbol,
                 size,
@@ -418,7 +418,7 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
         if (!(nextPageCursor as string)) break;
         cursor = nextPageCursor as string;
     }
-    return [...orders.values()];
+    return orders;
 }
 
 async function sellRequiredOptions({ state, orders, targetProfit, settings, restClient, callBalance, putBalance }: { state: State; orders: Order[]; targetProfit: number; settings: Settings; restClient: RestClientV5, callBalance: number, putBalance: number }) {
