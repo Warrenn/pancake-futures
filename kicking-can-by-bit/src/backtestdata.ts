@@ -10,6 +10,7 @@ export function backtestData({ dataFolder, symbol, startTime, endTime, callback 
         let fileName = `${dataFolder}/${symbol}-${date.toISOString().split('T')[0]}.zip`;
         if (!fs.existsSync(fileName)) {
             console.error(`File ${fileName} not found`);
+            date.setDate(date.getDate() + 1);
             continue;
         }
         let zipFile = new AdmZip(fileName);
