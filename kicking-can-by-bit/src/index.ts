@@ -390,7 +390,7 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
 
         for (let i = 0; i < list.length; i++) {
             let order = list[i];
-            if (['New', 'Created', 'Active'].indexOf(order.orderStatus) === -1) continue;
+            if (['New', 'Created', 'Active', 'PartiallyFilled'].indexOf(order.orderStatus) === -1) continue;
 
             let size = parseFloat(order.qty);
             let price = parseFloat(order.price);
@@ -426,9 +426,7 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let { nextExpiry, ask, bid, price } = state;
     let smallestPriceValue = Number(`1e-${pricePrecision}`);
-    let expiryString = getExpiryString(nextExpiry.getTime());
-    let startsWith = `${settings.base}-${expiryString}`;
-    let sellOrders = orders.filter(o => o.side === 'Sell' && !o.reduceOnly && o.symbol.startsWith(startsWith));
+    let sellOrders = orders.filter(o => o.side === 'Sell');
     let potentialProfit = 0;
 
     let potentialCallProfit = 0;
