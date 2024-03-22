@@ -1,19 +1,23 @@
 import { backtestData, BacktestDataCallback } from './backtestdata.js';
 import dotenv from 'dotenv';
 
-// let totalLoss = 0;
+let totalLoss = 0;
 let offset = 2;
 let stepSize = 25;
 let days = 0;
 let upperTrack = new Map<number, number>();
 let lowerTrack = new Map<number, number>();
 let maxTrack = new Map<number, number>();
-// let largestLoss = 0;
-// let totalGain = 0;
+let largestLoss = 0;
+let totalGain = 0;
+let daysPositon = 0;
+let daysGain = 0;
+
 // let totalPositionGain = 0;
 // let fakeTradeTotal = 0;
-// let dailyGain = 70;//14;//
-// let bounceMax = 2;
+let dailyGain = 30;//14;//
+let costPerBounce = 20;
+let bounceMax = 2;
 
 function createCallback(): BacktestDataCallback {
     let timeText = '';
@@ -27,8 +31,10 @@ function createCallback(): BacktestDataCallback {
     let upperBounceCount = 0;
     let lowerBounceCount = 0;
 
-    // let longPosition = 0;
-    // let shortPosition = 0;
+    let upperProfit = dailyGain;
+    let lowerProfit = dailyGain;
+    let upperClosed = false;
+    let lowerClosed = false;
 
     let offsetSize = offset * stepSize;
 
@@ -54,8 +60,16 @@ function createCallback(): BacktestDataCallback {
             lower = lower - offsetSize;
         }
 
-        // if (upperBounceCount === bounceMax && shortPosition === 0 && longPosition === 0) longPosition = high;
-        // if (lowerBounceCount === bounceMax && shortPosition === 0 && longPosition === 0) shortPosition = low;
+        if (upperBounceCount === bounceMax && !upperClosed) {
+            upper = 0;
+            upperProfit -= costPerBounce * bounceMax;
+            upperClosed = true;
+        };
+        if (lowerBounceCount === bounceMax && !lowerClosed) {
+            lower = 0;
+            lowerProfit -= costPerBounce * bounceMax;
+            lowerClosed = true;
+        }
 
         // if (time.getUTCHours() === 5 && time.getUTCMinutes() >= 0 && lower === 0 && upper === 0) {
         //     let midPoint = Math.round(open / stepSize) * stepSize;
@@ -68,25 +82,25 @@ function createCallback(): BacktestDataCallback {
 
         let nextTimeText = time.toISOString().split('T')[0];
         if (time.getUTCHours() === 8 && nextTimeText !== timeText) {
-            // let loss = 0;
-            // let positionGain = 0;
+            let loss = 0;
+            let positionGain = 0;
+
             // let fakeTrade = 0;
             // if (upper > 0 && close > upper && longPosition === 0) loss = close - upper;
             // if (lower > 0 && close < lower && shortPosition === 0) loss = lower - close;
-            // if (longPosition > 0 && close < longPosition) fakeTrade = longPosition - close;
-            // if (shortPosition > 0 && close > shortPosition) fakeTrade = close - shortPosition;
+            if (upperProfit > 0) positionGain += upperProfit;
+            if (lowerProfit > 0) positionGain += lowerProfit;
+            if (upperProfit < 0)
+                loss = -upperProfit;
+            if (lowerProfit < 0)
+                loss += -lowerProfit;
 
-            // if (longPosition > 0 && upper > 0 && upper > longPosition && close > longPosition)
-            //     positionGain = upper - longPosition;
-            // if (shortPosition > 0 && lower > 0 && lower < shortPosition && close < shortPosition)
-            //     positionGain = shortPosition - lower;
-
-            // if (loss > largestLoss) largestLoss = (loss + fakeTrade);
-            // totalGain += (dailyGain - loss - fakeTrade + positionGain);
+            if (loss > largestLoss) largestLoss = loss;
+            totalGain += positionGain - loss;
             // totalPositionGain += positionGain;
             // fakeTradeTotal += fakeTrade;
 
-            // totalLoss += (loss + fakeTrade);
+            totalLoss += loss;
 
             if (upperTrack.has(upperBounceCount)) {
                 let newCount = (upperTrack.get(upperBounceCount) || 0) + 1;
@@ -115,22 +129,23 @@ function createCallback(): BacktestDataCallback {
 
             days++;
 
-            console.log(`${timeText},${upper},${lower},${upperBounceCount},${lowerBounceCount},${maxBounce}`);
+            console.log(`${timeText},${upper},${lower},${upperProfit},${lowerProfit}`);
             timeText = nextTimeText;
             dateOpen = open;
             dateClose = close;
             dateHigh = high;
             dateLow = low;
-            // longPosition = 0;
-            // shortPosition = 0;
+            upperProfit = dailyGain;
+            lowerProfit = dailyGain;
 
             lowerBounceCount = 0;
             upperBounceCount = 0;
-            lower = 0;
-            upper = 0;
+            upperClosed = false;
+            lowerClosed = false;
+
             let midPoint = Math.round(open / stepSize) * stepSize;
-            lower = midPoint - (stepSize * 3);
-            upper = midPoint + (stepSize * 3);
+            lower = midPoint - (stepSize * 4);
+            upper = midPoint + (stepSize * 4);
         }
     };
 
@@ -145,7 +160,7 @@ backtestData({
     endTime: new Date(),
     callback,
 });
-// console.log(`Bidgest totalloss:${totalLoss} ${totalLoss / days} largest loss: ${largestLoss} days: ${days} total position gain: ${totalPositionGain} net gain: ${totalGain} average gain: ${totalGain / days}`);
+console.log(`Bidgest totalloss:${totalLoss} ${totalLoss / days} largest loss: ${largestLoss} days: ${days} net gain: ${totalGain} average gain: ${totalGain / days} days with position: ${daysPositon} days with gain: ${daysGain} pc ${Math.round((daysGain / daysPositon) * 100)}% `);
 
 console.log('Upper Track');
 let sortedMap = new Map([...upperTrack.entries()].sort((a, b) => a[0] - b[0]));
