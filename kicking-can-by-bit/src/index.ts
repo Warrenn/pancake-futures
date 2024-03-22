@@ -47,6 +47,9 @@ type State = {
     symbol: string
     nextExpiry: Date
     options: Map<string, OptionPositon>
+    middlePrice: number
+    callExceededMax: boolean
+    putExceededMax: boolean
 }
 
 type SymbolPrecision = {
@@ -62,11 +65,11 @@ type Credentials = {
 type Settings = {
     accountType?: AccountTypeV5
     stepSize: number
-    stepOffset: number
+    initialOffset: number
+    shiftSize: number
+    maxOffset: number
     base: string
     quote: string
-    maxNotionalValue: number
-    maxLoss: number
     targetProfit: number
 }
 
@@ -76,13 +79,13 @@ type Context = {
     restClient: RestClientV5
 }
 
-function getSellSymbol({ strikePrice, expiry, type, settings }: { strikePrice: number, expiry: Date, type: 'Put' | 'Call', settings: Settings }): string {
-    let offset = settings.stepSize * settings.stepOffset;
-    let expiryString = getExpiryString(expiry.getTime());
+// function getSellSymbol({ strikePrice, expiry, type, settings }: { strikePrice: number, expiry: Date, type: 'Put' | 'Call', settings: Settings }): string {
+//     let offset = settings.stepSize * settings.stepOffset;
+//     let expiryString = getExpiryString(expiry.getTime());
 
-    if (type === 'Call') return `${settings.base}-${expiryString}-${strikePrice + offset}-C`;
-    return `${settings.base}-${expiryString}-${strikePrice - offset}-P`;
-}
+//     if (type === 'Call') return `${settings.base}-${expiryString}-${strikePrice + offset}-C`;
+//     return `${settings.base}-${expiryString}-${strikePrice - offset}-P`;
+// }
 
 function orderbookUpdate(data: any, state: State) {
     if (!data || !data.data || !data.data.b || !data.data.a) return;
@@ -249,33 +252,6 @@ async function buyBackOptions({ options, orders, dailyBalance, state, settings, 
             continue;
         }
 
-
-        let counterSymbol = getSellSymbol({ strikePrice, expiry, type, settings });
-        let { bid: counterBid } = await getOrderBook({ symbol: counterSymbol, restClient, settings });
-        if (counterBid === undefined) {
-            await Logger.log(`cant buy back: ${symbol} as there is no counter order for ${counterSymbol} in orderbook`);
-            continue;
-        }
-
-        let buyBackCost = (adjustedBuyBackPrice * size) + (strikePrice * size * commission);
-        let resultBalance = dailyBalance - buyBackCost;
-
-        if (settings.maxLoss > 0 && resultBalance < -settings.maxLoss) {
-            Logger.log(`cant buy back option ${symbol} as resultBalance is less than maxLoss: ${settings.maxLoss}`);
-            continue;
-        }
-
-        let targetProfit = settings.targetProfit - resultBalance;
-        let counterProfit = counterBid - (option.strikePrice * commission);
-        let { strikePrice: counterStrikePrice } = (getSymbolDetails(counterSymbol) || { strikePrice });
-        let counterSize = round(targetProfit / counterProfit, sizePrecision);
-        let counterNotionalValue = counterSize * counterStrikePrice;
-
-        if (counterNotionalValue > settings.maxNotionalValue) {
-            Logger.log(`cant buy back option ${symbol} as notionalValue exceeds maxNotionalValue: ${settings.maxNotionalValue} for option: ${counterSymbol}`);
-            continue;
-        }
-
         let qty = `${round(option.size, sizePrecision)}`;
         let { retCode, retMsg } = await restClient.submitOrder({
             symbol,
@@ -355,9 +331,25 @@ async function tradingStrategy(context: Context) {
     let nextExpiry = getNextExpiry();
     let nextTime = nextExpiry.getTime();
 
-    if (nextTime !== state.nextExpiry.getTime()) {
+    if (nextTime !== state.nextExpiry.getTime() || !state.middlePrice) {
+        let strikePrice = Math.round(state.price / settings.stepSize) * settings.stepSize;
+        let target = settings.targetProfit / 2;
+
         state.nextExpiry = nextExpiry;
+        state.callExceededMax = false;
+        state.putExceededMax = false;
+        state.middlePrice = strikePrice;
         [...state.options.keys()].forEach(k => (state.options.get(k)?.expiry.getTime() || nextTime) < nextTime && state.options.delete(k));
+
+        let callStrikePrice = strikePrice + (settings.stepSize * settings.initialOffset);
+        let putStrikePrice = strikePrice - (settings.stepSize * settings.initialOffset);
+
+        let symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${callStrikePrice}-C`
+        await placeSellOrder({ strikePrice: callStrikePrice, target, settings, restClient, symbol });
+
+        symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${putStrikePrice}-P`
+        await placeSellOrder({ strikePrice: putStrikePrice, target, settings, restClient, symbol });
+
         return;
     }
 
@@ -476,21 +468,38 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
     let strikePrice = Math.round(price / settings.stepSize) * settings.stepSize;
     let optionTargetSize = settings.targetProfit / 2;
 
-    let target = optionTargetSize - potentialCallProfit - callBalance;
-    await placeSellOrder({ strikePrice, expiry: nextExpiry, type: 'Call', target, settings, restClient, smallestPriceValue, pricePrecision, sizePrecision });
+    let maxCallStrike = state.middlePrice + (settings.stepSize * settings.maxOffset);
+    let minPutStrike = state.middlePrice - (settings.stepSize * settings.maxOffset);
 
-    target = optionTargetSize - potentialPutProfit - putBalance;
-    await placeSellOrder({ strikePrice, expiry: nextExpiry, type: 'Put', target, settings, restClient, smallestPriceValue, pricePrecision, sizePrecision });
+    let callStrikePrice = strikePrice + (settings.stepSize * settings.shiftSize);
+    let putStrikePrice = strikePrice - (settings.stepSize * settings.shiftSize);
+
+    if (callStrikePrice > maxCallStrike) state.callExceededMax = true;
+    if (putStrikePrice < minPutStrike) state.putExceededMax = true;
+
+    if (!state.callExceededMax) {
+        let target = optionTargetSize - potentialCallProfit - callBalance;
+        let symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${callStrikePrice}-C`
+        await placeSellOrder({ strikePrice: callStrikePrice, target, settings, restClient, symbol });
+    }
+
+    if (!state.putExceededMax) {
+        let target = optionTargetSize - potentialPutProfit - putBalance;
+        let symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${putStrikePrice}-P`
+        await placeSellOrder({ strikePrice: putStrikePrice, target, settings, restClient, symbol });
+    }
 }
 
-async function placeSellOrder({ strikePrice, expiry, type, target, settings, restClient, smallestPriceValue, pricePrecision, sizePrecision }: { strikePrice: number; expiry: Date; type: 'Put' | 'Call'; target: number; settings: Settings; restClient: RestClientV5; smallestPriceValue: number; pricePrecision: number; sizePrecision: number }) {
+async function placeSellOrder({ strikePrice, symbol, target, settings, restClient }: { strikePrice: number; symbol: string; target: number; settings: Settings; restClient: RestClientV5; }) {
     if (target <= 0) return;
 
-    let sellSymbol = getSellSymbol({ strikePrice, expiry, type, settings });
+    let pricePrecision = precisionMap.get(`${settings.base}OPT`)?.pricePrecision || 1;
+    let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
+    let smallestPriceValue = Number(`1e-${pricePrecision}`);
 
-    let { bid: sellBid, ask: sellAsk } = await getOrderBook({ symbol: sellSymbol, restClient, settings });
+    let { bid: sellBid, ask: sellAsk } = await getOrderBook({ symbol, restClient, settings });
     if (sellBid === undefined) {
-        await Logger.log(`cant sell option ${sellSymbol} as there is no bid price in orderbook`);
+        await Logger.log(`cant sell option ${symbol} as there is no bid price in orderbook`);
         return;
     };
 
@@ -500,16 +509,11 @@ async function placeSellOrder({ strikePrice, expiry, type, target, settings, res
 
     let sellProfit = adjustedSellPrice - (strikePrice * commission);
     let sellSize = round(target / sellProfit, sizePrecision);
-    let notionalValue = sellSize * strikePrice;
-    if (settings.maxNotionalValue > 0 && notionalValue > settings.maxNotionalValue) {
-        Logger.log(`cant sell option ${sellSymbol} as notionalValue exceeds maxNotionalValue: ${settings.maxNotionalValue}`);
-        return;
-    }
 
     if (sellSize <= 0) return;
 
     let { retCode, retMsg } = await restClient.submitOrder({
-        symbol: sellSymbol,
+        symbol,
         orderLinkId: `${Date.now()}`,
         side: 'Sell',
         orderType: 'Limit',
@@ -520,11 +524,11 @@ async function placeSellOrder({ strikePrice, expiry, type, target, settings, res
         reduceOnly: false
     });
     if (retCode === 0) {
-        await Logger.log(`selling option: ${sellSymbol} qty:${sellSize} price:${adjustedSellPrice}`);
+        await Logger.log(`selling option: ${symbol} qty:${sellSize} price:${adjustedSellPrice}`);
         return;
     }
 
-    await Logger.log(`error selling option: ${sellSymbol} qty:${sellSize} price:${adjustedSellPrice} retCode:${retCode} retMsg:${retMsg}`);
+    await Logger.log(`error selling option: ${symbol} qty:${sellSize} price:${adjustedSellPrice} retCode:${retCode} retMsg:${retMsg}`);
 }
 
 async function getRunningBalance({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<{ call: number; put: number; balance: number }> {
