@@ -2,6 +2,7 @@ import { backtestData, BacktestDataCallback } from './backtestdata.js';
 import dotenv from 'dotenv';
 
 let totalLoss = 0;
+let initialOffset = 4;
 let offset = 2;
 let stepSize = 25;
 let days = 0;
@@ -10,14 +11,10 @@ let lowerTrack = new Map<number, number>();
 let maxTrack = new Map<number, number>();
 let largestLoss = 0;
 let totalGain = 0;
-let daysPositon = 0;
-let daysGain = 0;
 
-// let totalPositionGain = 0;
-// let fakeTradeTotal = 0;
+let bounceCost = -60;
 let dailyGain = 30;//14;//
-let costPerBounce = 20;
-let bounceMax = 2;
+let bounceMax = 3;
 
 function createCallback(): BacktestDataCallback {
     let timeText = '';
@@ -62,12 +59,12 @@ function createCallback(): BacktestDataCallback {
 
         if (upperBounceCount === bounceMax && !upperClosed) {
             upper = 0;
-            upperProfit -= costPerBounce * bounceMax;
+            upperProfit -= bounceCost;
             upperClosed = true;
         };
         if (lowerBounceCount === bounceMax && !lowerClosed) {
             lower = 0;
-            lowerProfit -= costPerBounce * bounceMax;
+            lowerProfit -= bounceCost;
             lowerClosed = true;
         }
 
@@ -144,8 +141,8 @@ function createCallback(): BacktestDataCallback {
             lowerClosed = false;
 
             let midPoint = Math.round(open / stepSize) * stepSize;
-            lower = midPoint - (stepSize * 4);
-            upper = midPoint + (stepSize * 4);
+            lower = midPoint - (stepSize * initialOffset);
+            upper = midPoint + (stepSize * initialOffset);
         }
     };
 
@@ -160,7 +157,7 @@ backtestData({
     endTime: new Date(),
     callback,
 });
-console.log(`Bidgest totalloss:${totalLoss} ${totalLoss / days} largest loss: ${largestLoss} days: ${days} net gain: ${totalGain} average gain: ${totalGain / days} days with position: ${daysPositon} days with gain: ${daysGain} pc ${Math.round((daysGain / daysPositon) * 100)}% `);
+console.log(`Bidgest totalloss:${totalLoss} ${totalLoss / days} largest loss: ${largestLoss} days: ${days} net gain: ${totalGain} average gain: ${totalGain / days}  `);
 
 console.log('Upper Track');
 let sortedMap = new Map([...upperTrack.entries()].sort((a, b) => a[0] - b[0]));

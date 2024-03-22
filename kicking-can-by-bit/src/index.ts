@@ -71,6 +71,7 @@ type Settings = {
     base: string
     quote: string
     targetProfit: number
+    maxSize: number
 }
 
 type Context = {
@@ -191,7 +192,7 @@ function getNextExpiry() {
     return expiryDate;
 }
 
-async function buyBackOptions({ options, orders, dailyBalance, state, settings, restClient }: { options: OptionPositon[]; orders: Order[]; dailyBalance: number; state: State; settings: Settings; restClient: RestClientV5 }): Promise<void> {
+async function buyBackOptions({ options, orders, state, settings, restClient }: { options: OptionPositon[]; orders: Order[]; state: State; settings: Settings; restClient: RestClientV5 }): Promise<void> {
     let price = state.price;
     if (price <= 0) return;
     let pricePrecision = precisionMap.get(`${settings.base}OPT`)?.pricePrecision || 1;
@@ -358,7 +359,7 @@ async function tradingStrategy(context: Context) {
     let { call: callBalance, balance: dailyBalance, put: putBalance } = await getRunningBalance({ restClient, settings });
     let orders = await getOrders({ restClient, settings });
     let options = [...state.options.values()];
-    await buyBackOptions({ options, orders, dailyBalance, state, settings, restClient });
+    await buyBackOptions({ options, orders, state, settings, restClient });
 
     let targetProfit = settings.targetProfit - dailyBalance;
     if (targetProfit <= 0) return;
@@ -513,6 +514,7 @@ async function placeSellOrder({ strikePrice, symbol, target, settings, restClien
     let sellSize = round(target / sellProfit, sizePrecision);
 
     if (sellSize <= 0) return;
+    sellSize = Math.min(sellSize, settings.maxSize);
 
     let { retCode, retMsg } = await restClient.submitOrder({
         symbol,
