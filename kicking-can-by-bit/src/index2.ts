@@ -5,14 +5,21 @@ const msDay = 1000 * 60 * 60 * 24;
 
 let days = 0;
 let totalGain = 0;
+let totalLoss = 0;
+let optionPutDays = 0;
+let optionCallDays = 0;
 let daysWithGain = 0;
+let daysWithNothing = 0;
 let largestLoss = 0;
+let totalPutSize = 0;
+let totalCallSize = 0;
 
-const target = 160;//14;//
+const target = 320;//14;//
+const maxOptionSize = 14;
 const defaultSigma = 0.86;
-const bounceMax = 3;
-const initialOffset = 4;
-const shiftSize = 2;
+const bounceMax = 400;
+const initialOffset = 1;
+const shiftSize = 1;
 const stepSize = 25;
 
 // Function to calculate the cumulative distribution function of the standard normal distribution
@@ -103,33 +110,55 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
         if (callStrike === 0 && callBounceCount < bounceMax) {
             let strikePrice = Math.round(open / stepSize) * stepSize;
             callStrike = strikePrice + (callBounceCount === 0 ? initialSize : offsetSize);
-            callBounceCount++;
 
             let timeToExpiration = calculateTimeToExpiration({ current: time, expiration });
             let sigma = getSigmaAtDate({ iterator, date: time, defaultValue: defaultSigma });
             let callPrice = callOptionPrice(open, callStrike, 0, timeToExpiration, sigma);
+            if (isNaN(callPrice) || callPrice <= 0) {
+                callStrike = 0;
+            }
+            else {
+                let callTarget = optionTarget - callBalance;
 
-            callSize = optionTarget / callPrice;
-            callBalance = callBalance + (callSize * callPrice);
+                callSize = callTarget / callPrice;
+                if (callSize > maxOptionSize) {
+                    callStrike = 0;
+                    callSize = 0;
+                } else {
+                    callBounceCount++;
+                    callBalance = callBalance + (callSize * callPrice);
+                }
+            }
         }
 
         if (putStrike === 0 && putBounceCount < bounceMax) {
             let strikePrice = Math.round(open / stepSize) * stepSize;
             putStrike = strikePrice - (putBounceCount === 0 ? initialSize : offsetSize);
-            putBounceCount++;
 
             let timeToExpiration = calculateTimeToExpiration({ current: time, expiration });
             let sigma = getSigmaAtDate({ iterator, date: time, defaultValue: defaultSigma });
             let putPrice = putOptionPrice(open, putStrike, 0, timeToExpiration, sigma);
+            if (isNaN(putPrice) || putPrice <= 0) {
+                putStrike = 0;
+            } else {
+                let putTarget = optionTarget - putBalance;
 
-            putSize = optionTarget / putPrice;
-            putBalance = putBalance + (putSize * putPrice);
+                putSize = putTarget / putPrice;
+                if (putSize > maxOptionSize) {
+                    putStrike = 0;
+                    putSize = 0;
+                } else {
+                    putBounceCount++;
+                    putBalance = putBalance + (putSize * putPrice);
+                }
+            }
         }
 
         if (callStrike > 0 && high > callStrike) {
             let timeToExpiration = calculateTimeToExpiration({ current: time, expiration });
             let sigma = getSigmaAtDate({ iterator, date: time, defaultValue: defaultSigma });
             let callPrice = callOptionPrice(open, callStrike, 0, timeToExpiration, sigma);
+            if (isNaN(callPrice)) return;
             callBalance = callBalance - (callSize * callPrice);
             callStrike = 0;
         }
@@ -138,15 +167,23 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
             let timeToExpiration = calculateTimeToExpiration({ current: time, expiration });
             let sigma = getSigmaAtDate({ iterator, date: time, defaultValue: defaultSigma });
             let putPrice = putOptionPrice(open, putStrike, 0, timeToExpiration, sigma);
+            if (isNaN(putPrice)) return;
             putBalance = putBalance - (putSize * putPrice);
             putStrike = 0;
         }
 
-        if (time.getTime() === expiration.getTime()) {
+        if (time.getTime() >= expiration.getTime()) {
             let positionGain = callBalance + putBalance;
 
+            if (positionGain === 0) daysWithNothing++;
             if (positionGain > 0) daysWithGain++;
+            if (positionGain < 0) totalLoss += -positionGain;
             if (positionGain < -largestLoss) largestLoss = -positionGain;
+            if (putSize > 0) optionPutDays++;
+            if (callSize > 0) optionCallDays++;
+
+            totalPutSize += putSize;
+            totalCallSize += callSize;
 
             totalGain += positionGain;
             days++;
@@ -175,19 +212,21 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
 dotenv.config({ override: true });
 
 let iterator = optionIndexGenerator({
-    dataFolder: `${process.env.DATA_FOLDER}/${process.env.BVOL_SYMBOL}/`,
+    dataFolder: `${process.env.DATA_FOLDER}/${process.env.BVOL_SYMBOL}`,
     symbol: process.env.BVOL_SYMBOL || '',
     startTime: new Date(process.env.START_TIME || ''),
     endTime: new Date()
 });
 backtestData({
-    dataFolder: `${process.env.DATA_FOLDER}/${process.env.SYMBOL}/`,
+    dataFolder: `${process.env.DATA_FOLDER}/${process.env.SYMBOL}`,
     symbol: process.env.SYMBOL || '',
     startTime: new Date(process.env.START_TIME || ''),
     endTime: new Date(),
     callback: createCallback(iterator)
 });
 
-console.log(`Bidgest days: ${days} days with gain: ${daysWithGain} gain pct: ${Math.round(daysWithGain / days * 100)}% net gain: ${totalGain} average gain: ${totalGain / days} largest loss: ${largestLoss}`);
+console.log(`total days: ${days} days with gain: ${daysWithGain} ${Math.round(daysWithGain / days * 100)}% days with nothing: ${daysWithNothing} ${Math.round(daysWithNothing / days * 100)}%`);
+console.log(`net gain: ${totalGain} average gain: ${totalGain / days} largest loss: ${largestLoss} total loss: ${totalLoss} average loss: ${totalLoss / days}`);
+console.log(`average call size: ${totalCallSize / optionCallDays} average put size: ${totalPutSize / optionPutDays}`);
 console.log(`DONE`);
 // console.log('Done');

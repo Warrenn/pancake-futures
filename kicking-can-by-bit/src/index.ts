@@ -47,9 +47,6 @@ type State = {
     symbol: string
     nextExpiry: Date
     options: Map<string, OptionPositon>
-    middlePrice: number
-    callExceededMax: boolean
-    putExceededMax: boolean
 }
 
 type SymbolPrecision = {
@@ -67,7 +64,6 @@ type Settings = {
     stepSize: number
     initialOffset: number
     shiftSize: number
-    maxOffset: number
     base: string
     quote: string
     targetProfit: number
@@ -79,14 +75,6 @@ type Context = {
     settings: Settings
     restClient: RestClientV5
 }
-
-// function getSellSymbol({ strikePrice, expiry, type, settings }: { strikePrice: number, expiry: Date, type: 'Put' | 'Call', settings: Settings }): string {
-//     let offset = settings.stepSize * settings.stepOffset;
-//     let expiryString = getExpiryString(expiry.getTime());
-
-//     if (type === 'Call') return `${settings.base}-${expiryString}-${strikePrice + offset}-C`;
-//     return `${settings.base}-${expiryString}-${strikePrice - offset}-P`;
-// }
 
 function orderbookUpdate(data: any, state: State) {
     if (!data || !data.data || !data.data.b || !data.data.a) return;
@@ -334,14 +322,11 @@ async function tradingStrategy(context: Context) {
     let nextExpiry = getNextExpiry();
     let nextTime = nextExpiry.getTime();
 
-    if (nextTime !== state.nextExpiry.getTime() || !state.middlePrice) {
+    if (nextTime !== state.nextExpiry.getTime()) {
         let strikePrice = Math.round(state.price / settings.stepSize) * settings.stepSize;
         let target = settings.targetProfit / 2;
 
         state.nextExpiry = nextExpiry;
-        state.callExceededMax = false;
-        state.putExceededMax = false;
-        state.middlePrice = strikePrice;
         [...state.options.keys()].forEach(k => (state.options.get(k)?.expiry.getTime() || nextTime) < nextTime && state.options.delete(k));
 
         let callStrikePrice = strikePrice + (settings.stepSize * settings.initialOffset);
@@ -471,26 +456,16 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
     let strikePrice = Math.round(price / settings.stepSize) * settings.stepSize;
     let optionTargetSize = settings.targetProfit / 2;
 
-    let maxCallStrike = state.middlePrice + (settings.stepSize * settings.maxOffset);
-    let minPutStrike = state.middlePrice - (settings.stepSize * settings.maxOffset);
-
     let callStrikePrice = strikePrice + (settings.stepSize * settings.shiftSize);
     let putStrikePrice = strikePrice - (settings.stepSize * settings.shiftSize);
 
-    if (callStrikePrice > maxCallStrike) state.callExceededMax = true;
-    if (putStrikePrice < minPutStrike) state.putExceededMax = true;
+    let target = optionTargetSize - potentialCallProfit - callBalance;
+    let symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${callStrikePrice}-C`
+    await placeSellOrder({ strikePrice: callStrikePrice, target, settings, restClient, symbol });
 
-    if (!state.callExceededMax) {
-        let target = optionTargetSize - potentialCallProfit - callBalance;
-        let symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${callStrikePrice}-C`
-        await placeSellOrder({ strikePrice: callStrikePrice, target, settings, restClient, symbol });
-    }
-
-    if (!state.putExceededMax) {
-        let target = optionTargetSize - potentialPutProfit - putBalance;
-        let symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${putStrikePrice}-P`
-        await placeSellOrder({ strikePrice: putStrikePrice, target, settings, restClient, symbol });
-    }
+    target = optionTargetSize - potentialPutProfit - putBalance;
+    symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${putStrikePrice}-P`
+    await placeSellOrder({ strikePrice: putStrikePrice, target, settings, restClient, symbol });
 }
 
 async function placeSellOrder({ strikePrice, symbol, target, settings, restClient }: { strikePrice: number; symbol: string; target: number; settings: Settings; restClient: RestClientV5; }) {
@@ -514,7 +489,7 @@ async function placeSellOrder({ strikePrice, symbol, target, settings, restClien
     let sellSize = round(target / sellProfit, sizePrecision);
 
     if (sellSize <= 0) return;
-    sellSize = Math.min(sellSize, settings.maxSize);
+    if (sellSize > settings.maxSize) return;
 
     let { retCode, retMsg } = await restClient.submitOrder({
         symbol,

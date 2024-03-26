@@ -48,7 +48,7 @@ export function* optionIndexGenerator({ dataFolder, symbol, startTime, endTime }
     while (date < endTime) {
         let fileName = `${dataFolder}/${symbol}-${date.toISOString().split('T')[0]}.zip`;
         if (!fs.existsSync(fileName)) {
-            console.error(`File ${fileName} not found`);
+            //console.error(`File ${fileName} not found`);
             date.setDate(date.getDate() + 1);
             continue;
         }
