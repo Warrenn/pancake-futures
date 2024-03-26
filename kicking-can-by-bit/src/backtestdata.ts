@@ -41,3 +41,39 @@ export function backtestData({ dataFolder, symbol, startTime, endTime, callback 
         date.setDate(date.getDate() + 1);
     }
 }
+
+export function* optionIndexGenerator({ dataFolder, symbol, startTime, endTime }: { dataFolder: string, symbol: string, startTime: Date, endTime: Date }): Generator<{ time: Date, index: number }> {
+    let date = startTime;
+
+    while (date < endTime) {
+        let fileName = `${dataFolder}/${symbol}-${date.toISOString().split('T')[0]}.zip`;
+        if (!fs.existsSync(fileName)) {
+            console.error(`File ${fileName} not found`);
+            date.setDate(date.getDate() + 1);
+            continue;
+        }
+        let zipFile = new AdmZip(fileName);
+        let zipEntries = zipFile.getEntries();
+
+        for (let i = 0; i < zipEntries.length; i++) {
+            let zipEntry = zipEntries[i];
+            if (!zipEntry.entryName.endsWith('.csv')) continue;
+            let lines = zipEntry.getData().toString().split(/(?:\r\n|\r|\n)/g);
+            for (let j = 1; j < lines.length; j++) {
+                let line = lines[j];
+                if (!line) continue;
+
+                let parts = line.split(',');
+                if (parts.length < 5) continue;
+
+                let timeValue = parseInt(parts[0]);
+                let index = parseFloat(parts[4]);
+                let time = new Date(timeValue);
+
+                yield ({ time, index });
+            }
+        }
+
+        date.setDate(date.getDate() + 1);
+    }
+}
