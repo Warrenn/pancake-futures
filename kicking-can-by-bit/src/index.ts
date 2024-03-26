@@ -197,9 +197,8 @@ async function buyBackOptions({ options, orders, state, settings, restClient }: 
 
         let symbol = option.symbol;
         let { strikePrice, type } = option;
-        let askStrike = Math.round(state.ask / settings.stepSize) * settings.stepSize;
-        let bidStrike = Math.round(state.bid / settings.stepSize) * settings.stepSize;
-        let positionITM = type === 'Call' ? askStrike >= strikePrice : bidStrike <= strikePrice;
+
+        let positionITM = type === 'Call' ? state.ask >= strikePrice : state.bid <= strikePrice;
         let buyOrders = [...orders.filter(o => o.reduceOnly && o.side === 'Buy' && o.symbol.startsWith(startsWith) && o.strikePrice === strikePrice)];
 
         if (!positionITM && buyOrders.length === 0) continue;

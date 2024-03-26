@@ -14,10 +14,9 @@ let largestLoss = 0;
 let totalPutSize = 0;
 let totalCallSize = 0;
 
-const target = 320;//14;//
-const maxOptionSize = 14;
+const target = 100;//14;//
+const maxOptionSize = 4;
 const defaultSigma = 0.86;
-const bounceMax = 400;
 const initialOffset = 1;
 const shiftSize = 1;
 const stepSize = 25;
@@ -86,9 +85,6 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
     let callStrike = 0;
     let putStrike = 0;
 
-    let callBounceCount = 0;
-    let putBounceCount = 0;
-
     let callBalance = 0;
     let putBalance = 0;
 
@@ -107,9 +103,9 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
             expiration.setDate(expiration.getDate() + 1);
         }
 
-        if (callStrike === 0 && callBounceCount < bounceMax) {
+        if (callStrike === 0) {
             let strikePrice = Math.round(open / stepSize) * stepSize;
-            callStrike = strikePrice + (callBounceCount === 0 ? initialSize : offsetSize);
+            callStrike = strikePrice + offsetSize;
 
             let timeToExpiration = calculateTimeToExpiration({ current: time, expiration });
             let sigma = getSigmaAtDate({ iterator, date: time, defaultValue: defaultSigma });
@@ -125,15 +121,14 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
                     callStrike = 0;
                     callSize = 0;
                 } else {
-                    callBounceCount++;
                     callBalance = callBalance + (callSize * callPrice);
                 }
             }
         }
 
-        if (putStrike === 0 && putBounceCount < bounceMax) {
+        if (putStrike === 0) {
             let strikePrice = Math.round(open / stepSize) * stepSize;
-            putStrike = strikePrice - (putBounceCount === 0 ? initialSize : offsetSize);
+            putStrike = strikePrice - offsetSize;
 
             let timeToExpiration = calculateTimeToExpiration({ current: time, expiration });
             let sigma = getSigmaAtDate({ iterator, date: time, defaultValue: defaultSigma });
@@ -148,7 +143,6 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
                     putStrike = 0;
                     putSize = 0;
                 } else {
-                    putBounceCount++;
                     putBalance = putBalance + (putSize * putPrice);
                 }
             }
@@ -194,9 +188,6 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
             callStrike = 0;
             putStrike = 0;
 
-            callBounceCount = 0;
-            putBounceCount = 0;
-
             callBalance = 0;
             putBalance = 0;
 
@@ -225,7 +216,7 @@ backtestData({
     callback: createCallback(iterator)
 });
 
-console.log(`total days: ${days} days with gain: ${daysWithGain} ${Math.round(daysWithGain / days * 100)}% days with nothing: ${daysWithNothing} ${Math.round(daysWithNothing / days * 100)}%`);
+console.log(`total days: ${days} days with gain: ${daysWithGain}(${Math.round(daysWithGain / days * 100)}%) days with nothing: ${daysWithNothing}(${Math.round(daysWithNothing / days * 100)}%)`);
 console.log(`net gain: ${totalGain} average gain: ${totalGain / days} largest loss: ${largestLoss} total loss: ${totalLoss} average loss: ${totalLoss / days}`);
 console.log(`average call size: ${totalCallSize / optionCallDays} average put size: ${totalPutSize / optionPutDays}`);
 console.log(`DONE`);
