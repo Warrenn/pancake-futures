@@ -75,16 +75,7 @@ function getSigmaAtDate({ iterator, date, defaultValue }: { iterator: Generator<
     }
 }
 
-dotenv.config({ override: true });
-
-let iterator = optionIndexGenerator({
-    dataFolder: `${process.env.DATA_FOLDER}/${process.env.BVOL_SYMBOL}/`,
-    symbol: process.env.BVOL_SYMBOL || '',
-    startTime: new Date(process.env.START_TIME || ''),
-    endTime: new Date()
-});
-
-function createCallback(): BacktestDataCallback {
+function createCallback(iterator: Generator<{ time: Date, index: number }>): BacktestDataCallback {
     let callStrike = 0;
     let putStrike = 0;
 
@@ -180,6 +171,22 @@ function createCallback(): BacktestDataCallback {
         }
     };
 }
+
+dotenv.config({ override: true });
+
+let iterator = optionIndexGenerator({
+    dataFolder: `${process.env.DATA_FOLDER}/${process.env.BVOL_SYMBOL}/`,
+    symbol: process.env.BVOL_SYMBOL || '',
+    startTime: new Date(process.env.START_TIME || ''),
+    endTime: new Date()
+});
+backtestData({
+    dataFolder: `${process.env.DATA_FOLDER}/${process.env.SYMBOL}/`,
+    symbol: process.env.SYMBOL || '',
+    startTime: new Date(process.env.START_TIME || ''),
+    endTime: new Date(),
+    callback: createCallback(iterator)
+});
 
 console.log(`Bidgest days: ${days} days with gain: ${daysWithGain} gain pct: ${Math.round(daysWithGain / days * 100)}% net gain: ${totalGain} average gain: ${totalGain / days} largest loss: ${largestLoss}`);
 console.log(`DONE`);
