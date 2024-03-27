@@ -15,7 +15,7 @@ let totalPutSize = 0;
 let totalCallSize = 0;
 
 const target = 320;//14;//
-const maxOptionSize = 40;
+const maxOptionSize = 14;//40;
 const defaultSigma = 0.86;
 const initialOffset = 1;
 const shiftSize = 1;

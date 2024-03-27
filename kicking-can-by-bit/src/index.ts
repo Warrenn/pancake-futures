@@ -322,7 +322,8 @@ async function tradingStrategy(context: Context) {
     let nextTime = nextExpiry.getTime();
 
     if (nextTime !== state.nextExpiry.getTime()) {
-        context.settings = await context.getSettings();
+        settings = await context.getSettings();
+        context.settings = settings;
         state.nextExpiry = nextExpiry;
         [...state.options.keys()].forEach(k => (state.options.get(k)?.expiry.getTime() || nextTime) < nextTime && state.options.delete(k));
 
