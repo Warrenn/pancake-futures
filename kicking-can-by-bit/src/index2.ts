@@ -14,8 +14,8 @@ let largestLoss = 0;
 let totalPutSize = 0;
 let totalCallSize = 0;
 
-const target = 100;//14;//
-const maxOptionSize = 4;
+const target = 320;//14;//
+const maxOptionSize = 40;
 const defaultSigma = 0.86;
 const initialOffset = 1;
 const shiftSize = 1;
@@ -105,7 +105,7 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
 
         if (callStrike === 0) {
             let strikePrice = Math.round(open / stepSize) * stepSize;
-            callStrike = strikePrice + offsetSize;
+            callStrike = strikePrice + ((callBalance === 0) ? initialSize : offsetSize);
 
             let timeToExpiration = calculateTimeToExpiration({ current: time, expiration });
             let sigma = getSigmaAtDate({ iterator, date: time, defaultValue: defaultSigma });
@@ -128,7 +128,7 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
 
         if (putStrike === 0) {
             let strikePrice = Math.round(open / stepSize) * stepSize;
-            putStrike = strikePrice - offsetSize;
+            putStrike = strikePrice - ((putBalance === 0) ? initialSize : offsetSize);
 
             let timeToExpiration = calculateTimeToExpiration({ current: time, expiration });
             let sigma = getSigmaAtDate({ iterator, date: time, defaultValue: defaultSigma });
@@ -152,18 +152,20 @@ function createCallback(iterator: Generator<{ time: Date, index: number }>): Bac
             let timeToExpiration = calculateTimeToExpiration({ current: time, expiration });
             let sigma = getSigmaAtDate({ iterator, date: time, defaultValue: defaultSigma });
             let callPrice = callOptionPrice(open, callStrike, 0, timeToExpiration, sigma);
-            if (isNaN(callPrice)) return;
-            callBalance = callBalance - (callSize * callPrice);
-            callStrike = 0;
+            if (!isNaN(callPrice) && callBalance > 0) {
+                callBalance = callBalance - (callSize * callPrice);
+                callStrike = 0;
+            }
         }
 
         if (putStrike > 0 && low < putStrike) {
             let timeToExpiration = calculateTimeToExpiration({ current: time, expiration });
             let sigma = getSigmaAtDate({ iterator, date: time, defaultValue: defaultSigma });
             let putPrice = putOptionPrice(open, putStrike, 0, timeToExpiration, sigma);
-            if (isNaN(putPrice)) return;
-            putBalance = putBalance - (putSize * putPrice);
-            putStrike = 0;
+            if (!isNaN(putPrice) && putPrice > 0) {
+                putBalance = putBalance - (putSize * putPrice);
+                putStrike = 0;
+            }
         }
 
         if (time.getTime() >= expiration.getTime()) {

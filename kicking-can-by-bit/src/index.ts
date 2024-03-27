@@ -38,6 +38,7 @@ type Order = {
     reduceOnly: boolean
     fee: number
     type: 'Put' | 'Call'
+    expiry: Date
 }
 
 type State = {
@@ -62,7 +63,6 @@ type Credentials = {
 type Settings = {
     accountType?: AccountTypeV5
     stepSize: number
-    initialOffset: number
     shiftSize: number
     base: string
     quote: string
@@ -74,6 +74,7 @@ type Context = {
     state: State
     settings: Settings
     restClient: RestClientV5
+    getSettings: () => Promise<Settings>
 }
 
 function orderbookUpdate(data: any, state: State) {
@@ -187,7 +188,6 @@ async function buyBackOptions({ options, orders, state, settings, restClient }: 
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
     let smallestPriceValue = Number(`1e-${pricePrecision}`);
     let expiry = state.nextExpiry;
-    let startsWith = `${settings.base}-${getExpiryString(expiry.getTime())}`;
 
     for (let i = 0; i < options.length; i++) {
         let option = options[i];
@@ -199,7 +199,7 @@ async function buyBackOptions({ options, orders, state, settings, restClient }: 
         let { strikePrice, type } = option;
 
         let positionITM = type === 'Call' ? state.ask >= strikePrice : state.bid <= strikePrice;
-        let buyOrders = [...orders.filter(o => o.reduceOnly && o.side === 'Buy' && o.symbol.startsWith(startsWith) && o.strikePrice === strikePrice)];
+        let buyOrders = orders.filter(o => o.side === 'Buy' && o.expiry.getTime() === expiry.getTime() && o.strikePrice === strikePrice && o.type === type);
 
         if (!positionITM && buyOrders.length === 0) continue;
         if (!positionITM && buyOrders.length > 0) {
@@ -322,33 +322,25 @@ async function tradingStrategy(context: Context) {
     let nextTime = nextExpiry.getTime();
 
     if (nextTime !== state.nextExpiry.getTime()) {
-        let strikePrice = Math.round(state.price / settings.stepSize) * settings.stepSize;
-        let target = settings.targetProfit / 2;
-
+        context.settings = await context.getSettings();
         state.nextExpiry = nextExpiry;
         [...state.options.keys()].forEach(k => (state.options.get(k)?.expiry.getTime() || nextTime) < nextTime && state.options.delete(k));
-
-        let callStrikePrice = strikePrice + (settings.stepSize * settings.initialOffset);
-        let putStrikePrice = strikePrice - (settings.stepSize * settings.initialOffset);
-
-        let symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${callStrikePrice}-C`
-        await placeSellOrder({ strikePrice: callStrikePrice, target, settings, restClient, symbol });
-
-        symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${putStrikePrice}-P`
-        await placeSellOrder({ strikePrice: putStrikePrice, target, settings, restClient, symbol });
 
         return;
     }
 
-    let { call: callBalance, balance: dailyBalance, put: putBalance } = await getRunningBalance({ restClient, settings });
+    let { callBalance, putBalance } = await getRunningBalance({ restClient, settings });
     let orders = await getOrders({ restClient, settings });
     let options = [...state.options.values()];
     await buyBackOptions({ options, orders, state, settings, restClient });
 
-    let targetProfit = settings.targetProfit - dailyBalance;
+    let { potentialCallProfit, potentialPutProfit, potentialCallSize, potentialPutSize } = await updateSellOrders({ state, orders, restClient, settings });
+
+    let targetProfit = settings.targetProfit - callBalance - putBalance - potentialCallProfit - potentialPutProfit;
     if (targetProfit <= 0) return;
 
-    await sellRequiredOptions({ state, orders, targetProfit, settings, restClient, callBalance, putBalance });
+    await Logger.log(`targetProfit: ${targetProfit} callBalance: ${callBalance} putBalance: ${putBalance} potentialCallProfit: ${potentialCallProfit} potentialPutProfit: ${potentialPutProfit}`);
+    await sellRequiredOptions({ state, settings, restClient, callBalance, putBalance, potentialCallProfit, potentialPutProfit, potentialCallSize, potentialPutSize });
 }
 
 async function getOrders({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<Order[]> {
@@ -376,7 +368,7 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
             let details = getSymbolDetails(order.symbol);
             if (!details) continue;
 
-            let { strikePrice, type, base } = details;
+            let { strikePrice, type, base, expiry } = details;
             if (base !== settings.base) continue;
 
             let fee = strikePrice * commission * size;
@@ -390,7 +382,8 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
                 price,
                 type,
                 reduceOnly: order.reduceOnly,
-                fee
+                fee,
+                expiry
             });
         }
 
@@ -400,16 +393,48 @@ async function getOrders({ restClient, settings }: { restClient: RestClientV5, s
     return orders;
 }
 
-async function sellRequiredOptions({ state, orders, targetProfit, settings, restClient, callBalance, putBalance }: { state: State; orders: Order[]; targetProfit: number; settings: Settings; restClient: RestClientV5, callBalance: number, putBalance: number }) {
+async function sellRequiredOptions({ state, settings, restClient, callBalance, putBalance, potentialCallProfit, potentialPutProfit, potentialCallSize, potentialPutSize }: { state: State; settings: Settings; restClient: RestClientV5; callBalance: number; putBalance: number; potentialCallProfit: number; potentialPutProfit: number; potentialCallSize: number; potentialPutSize: number }) {
+    let { nextExpiry, price } = state;
+    let highestCall = 0;
+    let lowestPut = Number.MAX_SAFE_INTEGER;
+    let callSize = potentialCallSize;
+    let putSize = potentialPutSize;
+
+    for (let value of state.options.values()) {
+        let { strikePrice, type, size } = value;
+        if (type === 'Call' && strikePrice > highestCall) highestCall = strikePrice;
+        if (type === 'Put' && strikePrice < lowestPut) lowestPut = strikePrice;
+        if (type === 'Call') callSize += size;
+        if (type === 'Put') putSize += size;
+    }
+
+    let strikePrice = Math.round(price / settings.stepSize) * settings.stepSize;
+    let optionTargetSize = settings.targetProfit / 2;
+
+    let callStrikePrice = (highestCall > 0) ? highestCall : strikePrice + (settings.stepSize * settings.shiftSize);
+    let putStrikePrice = (lowestPut < Number.MAX_SAFE_INTEGER) ? lowestPut : strikePrice - (settings.stepSize * settings.shiftSize);
+
+    let target = optionTargetSize - potentialCallProfit - callBalance;
+    let symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${callStrikePrice}-C`
+    await placeSellOrder({ strikePrice: callStrikePrice, target, settings, restClient, symbol, existingSize: callSize });
+
+    target = optionTargetSize - potentialPutProfit - putBalance;
+    symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${putStrikePrice}-P`
+    await placeSellOrder({ strikePrice: putStrikePrice, target, settings, restClient, symbol, existingSize: putSize });
+}
+
+async function updateSellOrders({ orders, state, restClient, settings }: { orders: Order[], state: State, restClient: RestClientV5, settings: Settings }): Promise<{ potentialCallProfit: number, potentialPutProfit: number, potentialCallSize: number, potentialPutSize: number }> {
     let pricePrecision = precisionMap.get(`${settings.base}OPT`)?.pricePrecision || 1;
     let sizePrecision = precisionMap.get(`${settings.base}OPT`)?.sizePrecision || 1;
-    let { nextExpiry, ask, bid, price } = state;
+    let { nextExpiry, ask, bid } = state;
     let smallestPriceValue = Number(`1e-${pricePrecision}`);
-    let sellOrders = orders.filter(o => o.side === 'Sell');
-    let potentialProfit = 0;
 
     let potentialCallProfit = 0;
     let potentialPutProfit = 0;
+    let potentialCallSize = 0;
+    let potentialPutSize = 0;
+
+    let sellOrders = orders.filter(o => o.side === 'Sell' && o.expiry.getTime() === nextExpiry.getTime());
 
     for (let i = 0; i < sellOrders.length; i++) {
         let order = sellOrders[i];
@@ -428,17 +453,30 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
         let value = order.price * order.size;
         let profit = value - order.fee;
 
-        if (order.type === 'Call') potentialCallProfit += profit;
-        if (order.type === 'Put') potentialPutProfit += profit;
-
-        potentialProfit += profit;
-
         let { ask: orderAsk } = await getOrderBook({ symbol, restClient, settings });
+        if ((orderAsk === undefined || orderAsk === order.price) && order.type === 'Call') {
+            potentialCallProfit += profit;
+            potentialCallSize += order.size;
+            continue;
+        }
+        if ((orderAsk === undefined || orderAsk === order.price) && order.type === 'Put') {
+            potentialPutProfit += profit;
+            potentialPutSize += order.size;
+            continue;
+        }
         if (orderAsk === undefined) continue;
-        if (orderAsk === order.price) continue;
 
         let adjustedOrderPrice = round(orderAsk - smallestPriceValue, pricePrecision);
         let qty = round(value / adjustedOrderPrice, sizePrecision);
+        let fee = qty * order.strikePrice * commission;
+        if (order.type === 'Call') {
+            potentialCallProfit += (qty * adjustedOrderPrice - fee);
+            potentialCallSize += qty;
+        }
+        if (order.type === 'Put') {
+            potentialPutProfit += (qty * adjustedOrderPrice - fee);
+            potentialPutSize += qty;
+        }
 
         let { retCode, retMsg } = await restClient.amendOrder({
             orderId: order.id,
@@ -450,24 +488,10 @@ async function sellRequiredOptions({ state, orders, targetProfit, settings, rest
         if (retCode === 0) continue;
         await Logger.log(`error amending order: ${order.id} ${order.symbol} price:${adjustedOrderPrice} qty:${qty} retCode:${retCode} retMsg:${retMsg}`);
     }
-
-    if (potentialProfit >= targetProfit) return;
-    let strikePrice = Math.round(price / settings.stepSize) * settings.stepSize;
-    let optionTargetSize = settings.targetProfit / 2;
-
-    let callStrikePrice = strikePrice + (settings.stepSize * settings.shiftSize);
-    let putStrikePrice = strikePrice - (settings.stepSize * settings.shiftSize);
-
-    let target = optionTargetSize - potentialCallProfit - callBalance;
-    let symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${callStrikePrice}-C`
-    await placeSellOrder({ strikePrice: callStrikePrice, target, settings, restClient, symbol });
-
-    target = optionTargetSize - potentialPutProfit - putBalance;
-    symbol = `${settings.base}-${getExpiryString(nextExpiry.getTime())}-${putStrikePrice}-P`
-    await placeSellOrder({ strikePrice: putStrikePrice, target, settings, restClient, symbol });
+    return { potentialCallProfit, potentialPutProfit, potentialCallSize, potentialPutSize };
 }
 
-async function placeSellOrder({ strikePrice, symbol, target, settings, restClient }: { strikePrice: number; symbol: string; target: number; settings: Settings; restClient: RestClientV5; }) {
+async function placeSellOrder({ strikePrice, symbol, target, settings, restClient, existingSize }: { strikePrice: number; symbol: string; target: number; settings: Settings; restClient: RestClientV5; existingSize: number }) {
     if (target <= 0) return;
 
     let pricePrecision = precisionMap.get(`${settings.base}OPT`)?.pricePrecision || 1;
@@ -488,7 +512,7 @@ async function placeSellOrder({ strikePrice, symbol, target, settings, restClien
     let sellSize = round(target / sellProfit, sizePrecision);
 
     if (sellSize <= 0) return;
-    if (sellSize > settings.maxSize) return;
+    if ((sellSize + existingSize) > settings.maxSize) return;
 
     let { retCode, retMsg } = await restClient.submitOrder({
         symbol,
@@ -509,15 +533,14 @@ async function placeSellOrder({ strikePrice, symbol, target, settings, restClien
     await Logger.log(`error selling option: ${symbol} qty:${sellSize} price:${adjustedSellPrice} retCode:${retCode} retMsg:${retMsg}`);
 }
 
-async function getRunningBalance({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<{ call: number; put: number; balance: number }> {
-    let balance = 0;
+async function getRunningBalance({ restClient, settings }: { restClient: RestClientV5, settings: Settings }): Promise<{ callBalance: number; putBalance: number; }> {
     let nextExpiry = getNextExpiry();
     let startTime = nextExpiry.getTime() - (24 * 60 * 60 * 1000);//1 day
     let endTime = (new Date()).getTime();
     let accountType = settings.accountType || 'UNIFIED';
     let cursor: string | undefined = undefined;
-    let call = 0;
-    let put = 0;
+    let callBalance = 0;
+    let putBalance = 0;
 
     while (true) {
         let { retCode, result: { list, nextPageCursor }, retMsg } = await restClient.getTransactionLog({
@@ -531,7 +554,7 @@ async function getRunningBalance({ restClient, settings }: { restClient: RestCli
 
         if (retCode !== 0) {
             Logger.log(`getting the transactions failed for ${settings.base} accountType: ${accountType} ${retMsg} setting default balance: 0`);
-            return { call: 0, put: 0, balance: 0 };
+            return { putBalance: 0, callBalance: 0 };
         }
 
         for (let i = 0; i < list.length; i++) {
@@ -544,22 +567,18 @@ async function getRunningBalance({ restClient, settings }: { restClient: RestCli
             let price = parseFloat(transactionLog.tradePrice);
             let fee = parseFloat(transactionLog.fee);
             let tradeValue = qty * price;
-            let profit = tradeValue - fee;
 
-            if (details.type === 'Call' && transactionLog.side === 'Sell') call += profit;
-            if (details.type === 'Call' && transactionLog.side === 'Buy') call -= profit;
+            if (details.type === 'Call' && transactionLog.side === 'Sell') callBalance += (tradeValue - fee);
+            if (details.type === 'Call' && transactionLog.side === 'Buy') callBalance -= (tradeValue + fee);
 
-            if (details.type === 'Put' && transactionLog.side === 'Sell') put += profit;
-            if (details.type === 'Put' && transactionLog.side === 'Buy') put -= profit;
-
-            if (transactionLog.side === 'Sell') balance += profit;
-            if (transactionLog.side === 'Buy') balance -= profit;
+            if (details.type === 'Put' && transactionLog.side === 'Sell') putBalance += (tradeValue - fee);
+            if (details.type === 'Put' && transactionLog.side === 'Buy') putBalance -= (tradeValue + fee);
         }
 
         if (!(nextPageCursor as string)) break;
         cursor = nextPageCursor as string;
     }
-    return { call, put, balance };
+    return { callBalance, putBalance };
 }
 
 dotenv.config({ override: true });
@@ -614,7 +633,8 @@ try {
     let context: Context = {
         state,
         settings,
-        restClient
+        restClient,
+        getSettings: async () => await getSettings({ ssm, name: 'settings', keyPrefix })
     }
 
     while (true) {
