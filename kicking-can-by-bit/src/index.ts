@@ -402,8 +402,8 @@ async function sellRequiredOptions({ state, settings, restClient, callBalance, p
 
     for (let value of state.options.values()) {
         let { strikePrice, type, size } = value;
-        if (type === 'Call' && strikePrice > highestCall) highestCall = strikePrice;
-        if (type === 'Put' && strikePrice < lowestPut) lowestPut = strikePrice;
+        if (type === 'Call' && strikePrice > highestCall && size > 0) highestCall = strikePrice;
+        if (type === 'Put' && strikePrice < lowestPut && size > 0) lowestPut = strikePrice;
         if (type === 'Call') callSize += size;
         if (type === 'Put') putSize += size;
     }
